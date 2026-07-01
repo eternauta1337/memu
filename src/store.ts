@@ -5,10 +5,15 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import * as sqliteVec from "sqlite-vec";
 import type { MemoMessage } from "./ingest.ts";
+
+const VEC_DIM = 384; // multilingual-e5-small (ver embeddings.ts). Mantener en sync.
 
 export interface MemoStore {
   db: Database.Database;
+  /** true si sqlite-vec cargó y la tabla `vec_messages` existe (búsqueda semántica disponible). */
+  vecEnabled: boolean;
   /** Inserta un mensaje. Devuelve true si era nuevo (false si ya estaba: dedup por id). */
   save(m: MemoMessage): boolean;
   /** Total de mensajes guardados. */
@@ -41,6 +46,17 @@ export function openStore(dbPath: string): MemoStore {
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, ts);
   `);
 
+  // sqlite-vec: tabla virtual de vectores, linkeada a messages por rowid. Best-effort: si la
+  // extensión no carga, el resto del store sigue funcionando (retrieval cae a keyword).
+  let vecEnabled = false;
+  try {
+    sqliteVec.load(db);
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_messages USING vec0(embedding float[${VEC_DIM}])`);
+    vecEnabled = true;
+  } catch (e) {
+    console.error(`sqlite-vec no disponible (búsqueda semántica off): ${(e as Error).message}`);
+  }
+
   const insert = db.prepare(`
     INSERT OR IGNORE INTO messages
       (id, chat_jid, chat_kind, sender_jid, push_name, from_me, ts, text,
@@ -52,6 +68,7 @@ export function openStore(dbPath: string): MemoStore {
 
   return {
     db,
+    vecEnabled,
     save(m: MemoMessage): boolean {
       // better-sqlite3 no acepta undefined/boolean como binding → null / 0|1.
       const r = insert.run({

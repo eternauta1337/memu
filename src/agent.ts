@@ -7,6 +7,7 @@
 
 import Database from "better-sqlite3";
 import { join } from "node:path";
+import { embed, toVecBlob } from "./embeddings.ts";
 import { chat, type ChatMessage } from "./llm.ts";
 import type { MemoStore } from "./store.ts";
 import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
@@ -136,14 +137,63 @@ tiene pendiente o a quién responder, buscá conversaciones donde alguien le esc
 esperar respuesta (el último mensaje no es "vos"). Citá el chat por su nombre. Basate SOLO en el
 contexto; si algo no aparece, decí que no lo ves en las conversaciones recientes en vez de inventar.`;
 
+// Búsqueda semántica: embebe la pregunta y trae los mensajes más parecidos por sqlite-vec.
+// Devuelve fragmentos formateados (con nombre de chat), o "" si no hay índice / falla.
+async function semanticSnippets(
+  store: MemoStore,
+  names: Map<string, string>,
+  question: string,
+  k: number,
+): Promise<string> {
+  if (!store.vecEnabled) return "";
+  try {
+    const [qv] = await embed([question], "query");
+    if (!qv) return "";
+    const rows = store.db
+      .prepare(`
+        SELECT m.chat_jid AS chat_jid, m.from_me AS from_me, m.push_name AS push_name,
+               m.sender_jid AS sender_jid, m.ts AS ts, m.text AS text
+        FROM vec_messages v
+        JOIN messages m ON m.rowid = v.rowid
+        WHERE v.embedding MATCH ? AND k = ?
+        ORDER BY v.distance
+      `)
+      .all(toVecBlob(qv), k) as Array<{
+      chat_jid: string;
+      from_me: number;
+      push_name: string | null;
+      sender_jid: string;
+      ts: string;
+      text: string | null;
+    }>;
+    const lines = rows
+      .filter((r) => (r.text ?? "").trim())
+      .map((r) => {
+        const who = r.from_me ? "vos" : r.push_name || r.sender_jid;
+        const label = names.get(stripDeviceSuffix(r.chat_jid)) ?? r.chat_jid;
+        const when = r.ts ? r.ts.slice(0, 10) : "";
+        return `- [${label}] ${when} ${who}: ${(r.text ?? "").replace(/\s+/g, " ").trim().slice(0, 160)}`;
+      });
+    return lines.length ? `Fragmentos relevantes (búsqueda semántica):\n${lines.join("\n")}` : "";
+  } catch (e) {
+    console.error(`[semantic] ${(e as Error).message}`);
+    return "";
+  }
+}
+
 /** Responde una pregunta de la persona usando contexto recuperado de su WhatsApp. */
 export async function askMemo(store: MemoStore, question: string): Promise<string> {
-  const context = buildContext(store.db, chatNames(), question);
+  const names = chatNames();
+  const [snippets, convos] = [
+    await semanticSnippets(store, names, question, 24),
+    buildContext(store.db, names, question),
+  ];
+  const context = [snippets, convos].filter(Boolean).join("\n\n");
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM },
     {
       role: "user",
-      content: `Conversaciones (recuperadas para tu pregunta):\n\n${context}\n\n---\nMensaje de la persona: ${question}`,
+      content: `Contexto recuperado de sus conversaciones:\n\n${context}\n\n---\nMensaje de la persona: ${question}`,
     },
   ];
   return chat(messages, { maxTokens: 900 });

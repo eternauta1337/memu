@@ -20,6 +20,7 @@ import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
 const DB = process.env.MEMO_DB ?? "./data/memo.db";
+const MEMO_PREFIX = "🤖 "; // marca los mensajes de Memo en el self-chat (todos van a la derecha)
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 async function main(): Promise<void> {
@@ -59,12 +60,14 @@ async function main(): Promise<void> {
         try {
           const ans = (await askMemo(store, q)).trim();
           if (ans) {
-            const r = await client.sendText(ownJid, ans);
+            // Prefijo 🤖 para distinguir a Memo de tus propios mensajes: en el self-chat
+            // ambos aparecen a la derecha (son de tu cuenta), no hay forma de ponerlos a la izq.
+            const r = await client.sendText(ownJid, `${MEMO_PREFIX}${ans}`);
             if (r.id) sentByMemo.add(r.id);
           }
         } catch (e) {
           console.log(dim(`[memo] error respondiendo: ${(e as Error)?.message ?? e}`));
-          await client.sendText(ownJid, "Uf, algo falló procesando eso 🫤").catch(() => {});
+          await client.sendText(ownJid, `${MEMO_PREFIX}uf, algo falló procesando eso 🫤`).catch(() => {});
         }
       }
     } finally {

@@ -8,6 +8,7 @@
 //
 // Correr: `pnpm ingest` (tras `pnpm pair`). Ctrl-C para cortar.
 
+import "./env.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { normalizeForMemo } from "./ingest.ts";
 import { openStore } from "./store.ts";

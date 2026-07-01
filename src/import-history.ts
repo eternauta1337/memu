@@ -10,6 +10,7 @@
 //
 //   pnpm import-history
 
+import "./env.ts";
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import type { ChatKind, MemoMessage } from "./ingest.ts";

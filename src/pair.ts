@@ -4,6 +4,7 @@
 //   pnpm pair                       # QR (WhatsApp → Dispositivos vinculados → Vincular)
 //   pnpm pair -- --phone +59899XXXXXXX   # pairing-code en vez de QR
 
+import "./env.ts";
 import { spawn } from "node:child_process";
 
 const bin = process.env.WACLI_BIN ?? "wacli";

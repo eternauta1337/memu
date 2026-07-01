@@ -4,6 +4,7 @@
 //   pnpm send-self                 # mensaje default
 //   pnpm send-self hola desde memo # mensaje custom
 
+import "./env.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
 const client = new WacliClient({

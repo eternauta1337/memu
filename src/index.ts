@@ -1,0 +1,92 @@
+// Runner de la Fase 0: valida que la ingesta del WhatsApp propio funciona de punta a punta.
+//
+//   1. Verifica el pairing (`wacli auth status`).
+//   2. Levanta el webhook loopback.
+//   3. Spawnea `wacli sync --follow --webhook` (respawn con backoff).
+//   4. Por cada mensaje: normaliza (conservando grupos + self), guarda en SQLite y loguea
+//      una línea. Objetivo: VER en vivo DMs, grupos y el self-chat cayendo a la DB.
+//
+// Correr: `pnpm ingest` (tras `pnpm pair`). Ctrl-C para cortar.
+
+import { type ChildProcess, spawn } from "node:child_process";
+import { normalizeForMemo } from "./ingest.ts";
+import { openStore } from "./store.ts";
+import { WacliClient } from "./wacli/wacli-client.ts";
+import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
+
+const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
+const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+const DB = process.env.MEMO_DB ?? "./data/memo.db";
+const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+
+async function main(): Promise<void> {
+  const client = new WacliClient({ bin: WACLI_BIN, store: STORE });
+
+  const status = await client.authStatus().catch((e: Error) => {
+    console.error(`No pude consultar wacli auth status: ${e.message}`);
+    process.exit(1);
+  });
+  if (!status.authenticated) {
+    console.error("WhatsApp no está pareado. Corré `pnpm pair` y escaneá el QR primero.");
+    process.exit(1);
+  }
+  const ownJid = status.linked_jid ?? status.jid ?? null;
+  console.log(`✅ Pareado como ${ownJid ?? "?"}${status.phone ? ` (+${status.phone})` : ""}`);
+
+  const store = openStore(DB);
+  console.log(dim(`store: ${DB} (${store.count()} mensajes ya guardados)`));
+
+  const webhook = new WacliWebhookServer();
+  webhook.onMessage((raw) => {
+    const m = normalizeForMemo(raw, ownJid);
+    const saved = store.save(m);
+    const tag = m.chatKind === "self" ? "🧠SELF" : m.chatKind === "group" ? "👥GRP " : "💬DM  ";
+    const dir = m.fromMe ? "→" : "←";
+    const media = m.mediaType ? ` [${m.mediaType}]` : "";
+    const body = (m.text || m.reactionEmoji || "").replace(/\s+/g, " ").slice(0, 80);
+    console.log(`${tag} ${dir} ${m.pushName || m.senderJid}: ${body}${media}${saved ? "" : dim(" (dup)")}`);
+  });
+  await webhook.listen();
+  console.log(dim(`webhook en ${webhook.url}`));
+
+  let shuttingDown = false;
+  let proc: ChildProcess | null = null;
+  const startSync = (): void => {
+    if (shuttingDown) return;
+    const args = [
+      "sync",
+      "--follow",
+      "--download-media",
+      "--store",
+      STORE,
+      "--webhook",
+      webhook.url,
+      "--webhook-secret",
+      webhook.webhookSecret,
+      "--webhook-allow-private",
+    ];
+    console.log(dim("wacli sync --follow → webhook (Ctrl-C para cortar)"));
+    proc = spawn(WACLI_BIN, args, { stdio: ["ignore", "inherit", "inherit"], env: process.env });
+    proc.once("exit", (code, signal) => {
+      proc = null;
+      if (!shuttingDown) {
+        console.log(dim(`sync salió (code=${code} signal=${signal}) — respawn en 2s`));
+        setTimeout(startSync, 2000).unref();
+      }
+    });
+    proc.once("error", (err) => console.error(`sync spawn error: ${String(err)}`));
+  };
+  startSync();
+
+  const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n${dim("cerrando…")} total en DB: ${store.count()}`);
+    if (proc && !proc.killed) proc.kill("SIGTERM");
+    setTimeout(() => process.exit(0), 800).unref();
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+void main();

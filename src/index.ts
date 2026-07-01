@@ -10,6 +10,7 @@
 
 import "./env.ts";
 import { type ChildProcess, spawn } from "node:child_process";
+import { askMemo } from "./agent.ts";
 import { normalizeForMemo } from "./ingest.ts";
 import { openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
@@ -43,6 +44,34 @@ async function main(): Promise<void> {
   const ownIds = new Set<string>();
   if (ownJid) ownIds.add(stripDeviceSuffix(ownJid));
 
+  // Loop del self-chat: cuando la persona escribe en "Mensajes contigo mismo", Memo responde
+  // ahí. Los envíos de Memo (por wacli) NO vuelven por el webhook → sin feedback loop; igual
+  // guardamos los ids que mandamos como cinturón de seguridad.
+  const sentByMemo = new Set<string>();
+  const queue: string[] = [];
+  let answering = false;
+  const answerInSelfChat = async (): Promise<void> => {
+    if (answering || !ownJid) return;
+    answering = true;
+    try {
+      while (queue.length) {
+        const q = queue.shift() as string;
+        try {
+          const ans = (await askMemo(store, q)).trim();
+          if (ans) {
+            const r = await client.sendText(ownJid, ans);
+            if (r.id) sentByMemo.add(r.id);
+          }
+        } catch (e) {
+          console.log(dim(`[memo] error respondiendo: ${(e as Error)?.message ?? e}`));
+          await client.sendText(ownJid, "Uf, algo falló procesando eso 🫤").catch(() => {});
+        }
+      }
+    } finally {
+      answering = false;
+    }
+  };
+
   const webhook = new WacliWebhookServer();
   webhook.onMessage((raw) => {
     if (raw.FromMe && raw.SenderJID) ownIds.add(stripDeviceSuffix(raw.SenderJID));
@@ -53,6 +82,13 @@ async function main(): Promise<void> {
     const media = m.mediaType ? ` [${m.mediaType}]` : "";
     const body = (m.text || m.reactionEmoji || "").replace(/\s+/g, " ").slice(0, 80);
     console.log(`${tag} ${dir} ${m.pushName || m.senderJid}: ${body}${media}${saved ? "" : dim(" (dup)")}`);
+
+    // Disparar respuesta solo para mensajes NUEVOS de la persona en el self-chat (texto real),
+    // no reacciones/borrados ni nuestros propios envíos.
+    if (saved && m.chatKind === "self" && m.text.trim() && !m.revoked && !m.reactionEmoji && !sentByMemo.has(m.id)) {
+      queue.push(m.text.trim());
+      void answerInSelfChat();
+    }
   });
   await webhook.listen();
   console.log(dim(`webhook en ${webhook.url}`));

@@ -51,6 +51,19 @@ sqlite3 data/memo.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kin
 sqlite3 data/memo.db "SELECT ts, chat_kind, push_name, substr(text,1,60) FROM messages ORDER BY ts DESC LIMIT 20;"
 ```
 
+## Fase 1 (en curso)
+
+Con la ingesta andando, el cerebro sobre gemma local (host-backend):
+
+```bash
+pnpm import-history                       # vuelca el histórico de wacli.db a la DB de Memo
+pnpm ask "¿qué tengo pendiente?"          # pregunta puntual (CLI, sin WhatsApp)
+```
+
+Y el **loop del self-chat**: cuando corrés `pnpm ingest`, además de ingerir, **Memo responde
+en tu self-chat**. Escribí en "Mensajes contigo mismo" (ej. "¿a quién le debo respuesta?") y
+te contesta ahí. (Necesita `.env` con `LLM_*` — ver `.env.example`.)
+
 ## Estructura
 
 ```
@@ -61,9 +74,14 @@ src/
     wacli-client.ts          # cliente del binario wacli: send/auth (portado)
   ingest.ts                  # normaliza mensaje → MemoMessage (CONSERVA grupos + self)
   store.ts                   # SQLite (better-sqlite3, WAL): tabla `messages`
-  index.ts                   # runner Fase 0: auth → webhook → sync → log + store
+  import-history.ts          # importa el histórico (backfill) desde wacli.db
+  llm.ts                     # cliente del LLM local (gemma4-31b vía LiteLLM, OpenAI-compat)
+  agent.ts                   # cerebro: recupera contexto + pregunta a gemma (RAG-lite)
+  ask.ts                     # CLI: `pnpm ask "…"`
+  index.ts                   # runner: ingesta + loop del self-chat (responde en el self-chat)
   pair.ts                    # `wacli auth` interactivo (QR)
   send-self.ts               # smoke test: postear al self-chat
+  env.ts                     # carga .env
 ```
 
 ## Diferencias con el canal WhatsApp de Proyecto-interno

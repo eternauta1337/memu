@@ -9,6 +9,7 @@
     "ingest": "tsx src/index.ts",
     "import-history": "tsx src/import-history.ts",
     "ask": "tsx src/ask.ts",
+    "digest": "tsx src/digest.ts",
     "send-self": "tsx src/send-self.ts",
     "typecheck": "tsc --noEmit"
   },

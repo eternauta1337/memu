@@ -19,6 +19,7 @@ export function openStore(dbPath: string): MemoStore {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000"); // el ingest y el importador pueden escribir a la vez
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id             TEXT PRIMARY KEY,

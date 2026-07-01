@@ -7,6 +7,7 @@
   "scripts": {
     "pair": "tsx src/pair.ts",
     "ingest": "tsx src/index.ts",
+    "import-history": "tsx src/import-history.ts",
     "send-self": "tsx src/send-self.ts",
     "typecheck": "tsc --noEmit"
   },

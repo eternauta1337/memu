@@ -12,6 +12,7 @@ import "./env.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { askMemo } from "./agent.ts";
 import { normalizeForMemo } from "./ingest.ts";
+import { embedMissing } from "./indexer.ts";
 import { openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
@@ -125,9 +126,29 @@ async function main(): Promise<void> {
   };
   startSync();
 
+  // Embed incremental: cada 60s embebe los mensajes nuevos que llegaron (más recientes primero,
+  // acotado). Así lo que entra en vivo también es buscable por significado. Tolerante a correr en
+  // paralelo con el índice full (`pnpm embed`). El modelo se carga lazy en el 1er sweep.
+  let sweeping = false;
+  const embedSweep = async (): Promise<void> => {
+    if (sweeping || shuttingDown || !store.vecEnabled) return;
+    sweeping = true;
+    try {
+      const n = await embedMissing(store, { order: "desc", limit: 256 });
+      if (n) console.log(dim(`[embed] +${n} vectores`));
+    } catch (e) {
+      console.log(dim(`[embed] sweep error: ${(e as Error)?.message ?? e}`));
+    } finally {
+      sweeping = false;
+    }
+  };
+  const embedTimer = store.vecEnabled ? setInterval(() => void embedSweep(), 60_000) : null;
+  embedTimer?.unref();
+
   const shutdown = (): void => {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (embedTimer) clearInterval(embedTimer);
     console.log(`\n${dim("cerrando…")} total en DB: ${store.count()}`);
     if (proc && !proc.killed) proc.kill("SIGTERM");
     setTimeout(() => process.exit(0), 800).unref();

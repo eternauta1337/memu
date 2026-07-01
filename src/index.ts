@@ -13,6 +13,7 @@ import { normalizeForMemo } from "./ingest.ts";
 import { openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
+import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
@@ -36,9 +37,15 @@ async function main(): Promise<void> {
   const store = openStore(DB);
   console.log(dim(`store: ${DB} (${store.count()} mensajes ya guardados)`));
 
+  // Identidades propias para detectar el self-chat: sembramos el JID de teléfono y aprendemos
+  // el/los LID propios del SenderJID de los mensajes FromMe (ver nota en ingest.ts).
+  const ownIds = new Set<string>();
+  if (ownJid) ownIds.add(stripDeviceSuffix(ownJid));
+
   const webhook = new WacliWebhookServer();
   webhook.onMessage((raw) => {
-    const m = normalizeForMemo(raw, ownJid);
+    if (raw.FromMe && raw.SenderJID) ownIds.add(stripDeviceSuffix(raw.SenderJID));
+    const m = normalizeForMemo(raw, ownIds);
     const saved = store.save(m);
     const tag = m.chatKind === "self" ? "🧠SELF" : m.chatKind === "group" ? "👥GRP " : "💬DM  ";
     const dir = m.fromMe ? "→" : "←";

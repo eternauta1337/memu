@@ -44,16 +44,22 @@ export interface MemoMessage {
 }
 
 /**
- * Normaliza un `WacliWebhookMessage`. `ownJid` (del `auth status`) permite marcar el
- * self-chat: el chat cuyo JID es nuestro propio número. Pura (sin I/O) → testeable.
+ * Normaliza un `WacliWebhookMessage`. `ownIds` es el conjunto de identidades propias
+ * conocidas (JID de teléfono `@s.whatsapp.net` + LIDs `@lid` aprendidos): el chat cuyo JID
+ * está en ese set es el self-chat ("Mensajes contigo mismo").
+ *
+ * OJO identidad LID↔teléfono: el webhook en vivo entrega DMs/self en formato `@lid`, mientras
+ * que `wacli.db` los guarda como `@s.whatsapp.net`. Por eso NO alcanza con el JID de teléfono
+ * del `auth status`; el runner aprende el LID propio del `SenderJID` de los mensajes `FromMe`
+ * (cuando el mensaje es propio, el sender somos nosotros) y lo va sumando a `ownIds`.
+ * Pura (sin I/O) → testeable.
  */
-export function normalizeForMemo(msg: WacliWebhookMessage, ownJid: string | null): MemoMessage {
+export function normalizeForMemo(msg: WacliWebhookMessage, ownIds: ReadonlySet<string>): MemoMessage {
   const chatJid = stripDeviceSuffix(jidToString(msg.Chat));
   const senderJid = stripDeviceSuffix(msg.SenderJID || chatJid);
-  const own = ownJid ? stripDeviceSuffix(ownJid) : null;
 
   let chatKind: ChatKind = isGroupJid(chatJid) ? "group" : "dm";
-  if (own && chatJid === own) chatKind = "self";
+  if (ownIds.has(chatJid)) chatKind = "self";
 
   const mediaType = msg.Media ? (msg.Media.Type || "document").toLowerCase() : undefined;
   // Para audio/ptt wacli rellena Text con el placeholder "[Audio]" → lo vaciamos para que la

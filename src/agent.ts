@@ -109,6 +109,9 @@ export async function askMemo(store: MemoStore, question: string): Promise<strin
     messages.push({ role: "assistant", content: content || "", tool_calls: toolCalls });
     for (const tc of toolCalls) {
       const result = await runTool(store, names, tc.function.name, tc.function.arguments);
+      if (process.env.MEMO_DEBUG) {
+        console.error(`[tool] ${tc.function.name}(${tc.function.arguments}) → ${result.length}c\n${result.slice(0, 300)}\n`);
+      }
       messages.push({ role: "tool", tool_call_id: tc.id, name: tc.function.name, content: result });
     }
   }

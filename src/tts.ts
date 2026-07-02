@@ -1,43 +1,72 @@
-// Text-to-speech local (MMS-TTS / VITS vía Transformers.js, CPU) — mismo stack, sin servicio ni
-// GPU. Genera el waveform y lo encodea a OGG/Opus con ffmpeg (formato que wacli manda como nota
-// de voz). $0. Calidad "correcta" (algo robótica); se puede subir a Piper más adelante.
+// Text-to-speech local con Piper (rhasspy/piper): TTS neural VITS, CPU, rápido y con voz
+// natural en español rioplatense (es_AR-daniela). Binario + voz viven en ./data/piper (gitignored,
+// bajados aparte). Piper emite PCM crudo y ffmpeg lo encodea a OGG/Opus (nota de voz de wacli). $0.
+//
+// Antes usábamos mms-tts (Transformers.js) pero sonaba robótico. Piper es el upgrade de calidad.
 
-import { env, pipeline } from "@huggingface/transformers";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-const TTS_MODEL = process.env.TTS_MODEL ?? "Xenova/mms-tts-spa";
-env.cacheDir = process.env.EMBED_CACHE ?? "./data/models";
+const PIPER_BIN = process.env.PIPER_BIN ?? "./data/piper/piper/piper";
+const PIPER_VOICE = process.env.PIPER_VOICE ?? "./data/piper/es_AR-daniela-high.onnx";
+const PIPER_DIR = dirname(PIPER_BIN); // libs (LD_LIBRARY_PATH) y espeak-ng-data viven acá
 
-type Synth = (text: string) => Promise<{ audio: Float32Array; sampling_rate: number }>;
-
-let synthPromise: Promise<Synth> | null = null;
-function getSynth(): Promise<Synth> {
-  if (!synthPromise) synthPromise = pipeline("text-to-speech", TTS_MODEL) as unknown as Promise<Synth>;
-  return synthPromise;
+// Sample rate de la voz (del .onnx.json de Piper). Default 22050 (voces "high").
+function voiceSampleRate(): number {
+  try {
+    const cfg = JSON.parse(readFileSync(`${PIPER_VOICE}.json`, "utf8")) as { audio?: { sample_rate?: number } };
+    return cfg.audio?.sample_rate ?? 22050;
+  } catch {
+    return 22050;
+  }
 }
+const SAMPLE_RATE = voiceSampleRate();
 
-/** Encodea PCM float32 mono a OGG/Opus con ffmpeg (leyendo de stdin). */
-function encodeOpus(pcm: Buffer, sampleRate: number, outPath: string): Promise<string> {
+/** Sintetiza `text` a una nota de voz OGG/Opus en `outPath` (Piper → PCM → ffmpeg → opus). */
+export function synthesize(text: string, outPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (e: Error) => {
+      if (!settled) {
+        settled = true;
+        reject(e);
+      }
+    };
+
+    const piper = spawn(
+      PIPER_BIN,
+      ["--model", PIPER_VOICE, "--espeak_data", join(PIPER_DIR, "espeak-ng-data"), "--output-raw"],
+      { env: { ...process.env, LD_LIBRARY_PATH: `${PIPER_DIR}:${process.env.LD_LIBRARY_PATH ?? ""}` } },
+    );
     const ff = spawn("ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y",
-      "-f", "f32le", "-ar", String(sampleRate), "-ac", "1", "-i", "-",
+      "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1", "-i", "-",
       "-c:a", "libopus", "-b:a", "32k", outPath,
     ]);
+
     let err = "";
     ff.stderr.on("data", (d) => (err += d));
-    ff.on("error", reject);
-    ff.on("close", (code) => (code === 0 ? resolve(outPath) : reject(new Error(`ffmpeg opus falló: ${err}`))));
-    ff.stdin.write(pcm);
-    ff.stdin.end();
-  });
-}
+    piper.stderr.on("data", (d) => (err += d)); // piper loguea info acá; solo importa si falla
 
-/** Sintetiza `text` a una nota de voz OGG/Opus en `outPath`. Devuelve outPath. */
-export async function synthesize(text: string, outPath: string): Promise<string> {
-  const synth = await getSynth();
-  const out = await synth(text.replace(/\s+/g, " ").trim());
-  const f32 = out.audio;
-  const pcm = Buffer.from(f32.buffer, f32.byteOffset, f32.length * 4);
-  return encodeOpus(pcm, out.sampling_rate, outPath);
+    piper.on("error", fail);
+    ff.on("error", fail);
+    piper.stdout.pipe(ff.stdin);
+    piper.on("close", (code) => {
+      if (code !== 0) fail(new Error(`piper salió ${code}: ${err.slice(-300)}`));
+    });
+    ff.on("close", (code) => {
+      if (code === 0) {
+        if (!settled) {
+          settled = true;
+          resolve(outPath);
+        }
+      } else {
+        fail(new Error(`ffmpeg opus falló: ${err.slice(-300)}`));
+      }
+    });
+
+    piper.stdin.write(text.replace(/\s+/g, " ").trim());
+    piper.stdin.end();
+  });
 }

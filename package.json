@@ -13,6 +13,7 @@
     "embed": "tsx src/embed-index.ts",
     "digest": "tsx src/digest.ts",
     "send-self": "tsx src/send-self.ts",
+    "setup-tts": "bash scripts/get-piper.sh",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

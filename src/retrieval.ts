@@ -141,8 +141,10 @@ export async function searchMessages(store: MemoStore, query: string, names: Map
 
   if (out.length === 0) return "No encontré mensajes relacionados.";
   out.sort((a, b) => (a.ts < b.ts ? -1 : 1)); // cronológico
+  // Nos quedamos con los MÁS RECIENTES (slice(-N)), no los más viejos: si hay muchos matches,
+  // lo de hoy no debe quedar afuera. (Bug previo: slice(0,N) descartaba lo nuevo.)
   return out
-    .slice(0, 60)
+    .slice(-60)
     .map((m) => fmtMsg(m, names, true))
     .join("\n");
 }

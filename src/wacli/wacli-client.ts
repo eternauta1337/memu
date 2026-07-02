@@ -104,6 +104,14 @@ export class WacliClient {
     await this.runJson(["presence", state, "--to", to]);
   }
 
+  /** Descarga la media de un mensaje al store. OJO: necesita el lock exclusivo del store → NO
+   *  corre en paralelo con `sync --follow` (a diferencia de send/presence, no delega por IPC). */
+  async downloadMedia(chat: string, id: string, opts?: { lockWaitMs?: number }): Promise<SendResult> {
+    const args = ["media", "download", "--chat", chat, "--id", id];
+    if (opts?.lockWaitMs) args.push("--lock-wait", `${Math.ceil(opts.lockWaitMs / 1000)}s`);
+    return this.runJson<SendResult>(args);
+  }
+
   /** Reacciona con un emoji. `reaction=""` lo quita. `sender` hace falta en grupos. */
   async sendReact(
     to: string,

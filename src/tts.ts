@@ -12,6 +12,12 @@ const PIPER_BIN = process.env.PIPER_BIN ?? "./data/piper/piper/piper";
 const PIPER_VOICE = process.env.PIPER_VOICE ?? "./data/piper/es_AR-daniela-high.onnx";
 const PIPER_DIR = dirname(PIPER_BIN); // libs (LD_LIBRARY_PATH) y espeak-ng-data viven acá
 
+// Parámetros de voz (elegidos por el usuario: pausada, lenta, calmada). Configurables por env.
+const LENGTH_SCALE = process.env.PIPER_LENGTH_SCALE ?? "1.40"; // ritmo (>1 = más lento)
+const NOISE_SCALE = process.env.PIPER_NOISE_SCALE ?? "0.55"; // timbre estable
+const NOISE_W = process.env.PIPER_NOISE_W ?? "0.60"; // cadencia pareja
+const SENTENCE_SILENCE = process.env.PIPER_SENTENCE_SILENCE ?? "0.70"; // pausa entre frases (s)
+
 // Sample rate de la voz (del .onnx.json de Piper). Default 22050 (voces "high").
 function voiceSampleRate(): number {
   try {
@@ -36,7 +42,15 @@ export function synthesize(text: string, outPath: string): Promise<string> {
 
     const piper = spawn(
       PIPER_BIN,
-      ["--model", PIPER_VOICE, "--espeak_data", join(PIPER_DIR, "espeak-ng-data"), "--output-raw"],
+      [
+        "--model", PIPER_VOICE,
+        "--espeak_data", join(PIPER_DIR, "espeak-ng-data"),
+        "--length_scale", LENGTH_SCALE,
+        "--noise_scale", NOISE_SCALE,
+        "--noise_w", NOISE_W,
+        "--sentence_silence", SENTENCE_SILENCE,
+        "--output-raw",
+      ],
       { env: { ...process.env, LD_LIBRARY_PATH: `${PIPER_DIR}:${process.env.LD_LIBRARY_PATH ?? ""}` } },
     );
     const ff = spawn("ffmpeg", [

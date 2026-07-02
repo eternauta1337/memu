@@ -8,7 +8,7 @@
 import "./env.ts";
 import { chatNames } from "./agent.ts";
 import { chat, type ChatMessage } from "./llm.ts";
-import { openStore } from "./store.ts";
+import { type MemoStore, openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
@@ -81,8 +81,7 @@ rioplatense, para leer de un vistazo:
   (el último mensaje de ese chat no es "vos"). Si no hay, decí "Nada urgente".
 Sé conciso y concreto. No inventes: si algo no está en los mensajes, no lo pongas.`;
 
-async function generate(): Promise<string> {
-  const store = openStore(DB);
+async function generateBody(store: MemoStore): Promise<string> {
   const { ctx, n } = buildTodayContext(store.db, chatNames());
   if (n === 0) return "Hoy estuvo tranquilo — no registré mensajes nuevos en tus chats.";
   const messages: ChatMessage[] = [
@@ -92,10 +91,16 @@ async function generate(): Promise<string> {
   return (await chat(messages, { maxTokens: 900 })).trim();
 }
 
+/** Digest completo, ya formateado y listo para postear en el self-chat. Reusado por el
+ *  scheduler de reminders (`action='digest'`). */
+export async function generateDigest(store: MemoStore): Promise<string> {
+  return `🤖 📋 *Resumen del día*\n\n${await generateBody(store)}`;
+}
+
 async function main(): Promise<void> {
   const send = process.argv.includes("--send");
-  const body = await generate();
-  const out = `🤖 📋 *Resumen del día*\n\n${body}`;
+  const store = openStore(DB);
+  const out = await generateDigest(store);
 
   if (!send) {
     console.log(`\n${out}\n`);

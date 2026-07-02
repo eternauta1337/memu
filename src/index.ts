@@ -11,8 +11,10 @@
 import "./env.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { askMemo } from "./agent.ts";
+import { generateDigest } from "./digest.ts";
 import { normalizeForMemo } from "./ingest.ts";
 import { embedMissing } from "./indexer.ts";
+import { nextFire } from "./reminders.ts";
 import { openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
@@ -145,10 +147,38 @@ async function main(): Promise<void> {
   const embedTimer = store.vecEnabled ? setInterval(() => void embedSweep(), 60_000) : null;
   embedTimer?.unref();
 
+  // Scheduler de reminders: cada 30s dispara los vencidos al self-chat. Los recurrentes se
+  // re-agendan solos; los de una sola vez quedan 'done'. Es la única pieza de scheduling y
+  // siempre nace de un pedido de la persona (nunca automático).
+  let firing = false;
+  const fireDueReminders = async (): Promise<void> => {
+    if (firing || shuttingDown || !ownJid) return;
+    firing = true;
+    try {
+      for (const r of store.dueReminders(Date.now())) {
+        const body = r.action === "digest" ? await generateDigest(store) : `🤖 ⏰ ${r.text}`;
+        try {
+          const sent = await client.sendText(ownJid, body);
+          if (sent.id) sentByMemo.add(sent.id);
+          store.markFired(r.id, nextFire(r.fireAt, r.recurrence, Date.now()));
+          console.log(dim(`[reminder] #${r.id} disparado (${r.action})`));
+        } catch (e) {
+          console.log(dim(`[reminder] #${r.id} falló al enviar: ${(e as Error)?.message ?? e}`));
+        }
+      }
+    } finally {
+      firing = false;
+    }
+  };
+  const reminderTimer = setInterval(() => void fireDueReminders(), 30_000);
+  reminderTimer.unref();
+  void fireDueReminders(); // chequeo inicial (por si quedaron vencidos mientras estaba caído)
+
   const shutdown = (): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     if (embedTimer) clearInterval(embedTimer);
+    clearInterval(reminderTimer);
     console.log(`\n${dim("cerrando…")} total en DB: ${store.count()}`);
     if (proc && !proc.killed) proc.kill("SIGTERM");
     setTimeout(() => process.exit(0), 800).unref();

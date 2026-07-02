@@ -1,200 +1,72 @@
-// El "cerebro" de Memo: dada una pregunta, recupera contexto de la DB y le pide a gemma local
-// una respuesta. Retrieval híbrido (sin embeddings todavía):
-//   1) chats más recientes (para "¿qué está pasando?"),
-//   2) chats cuyo NOMBRE matchea la pregunta (para "info de <persona/grupo>"),
-//   3) mensajes cuyo TEXTO matchea palabras clave de la pregunta (para temas puntuales).
-// Reusado por el CLI (`ask.ts`) y por el loop del self-chat (`index.ts`).
+// El "cerebro" de Memo, ahora como AGENTE (antes era single-shot). Por cada mensaje de la persona
+// en el self-chat corre un loop: gemma ve las herramientas (tools.ts), decide cuáles llamar,
+// nosotros las ejecutamos y le devolvemos el resultado, y así encadena pasos hasta responder.
+// Además arrastra memoria conversacional (session.ts) y memoria del usuario (hechos en el store).
 
-import Database from "better-sqlite3";
-import { join } from "node:path";
-import { embed, toVecBlob } from "./embeddings.ts";
-import { chat, type ChatMessage } from "./llm.ts";
+import { type ChatMessage, complete } from "./llm.ts";
+import { chatNames } from "./retrieval.ts";
+import { loadSession, maybeCompact, saveTurn } from "./session.ts";
 import type { MemoStore } from "./store.ts";
-import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
+import { runTool, TOOLS } from "./tools.ts";
 
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+export { chatNames };
 
-const RECENT_CHATS = 10; // chats recientes por default (contexto "qué pasa")
-const PER_CHAT = 12; // últimos N mensajes por chat
-const MAX_CHATS = 22; // tope total de chats en el contexto
-const TEXT_HITS = 60; // tope de mensajes matcheados por palabra clave
-const CONTEXT_CHAR_CAP = 16000; // tope de caracteres del contexto
+const MAX_STEPS = 6; // tope de rondas de tool-calling por mensaje
 
-// Palabras muy comunes que no sirven para buscar.
-const STOP = new Set(
-  "que de la el los las un una y o a en con por para del al se me te lo le mi tu su es son esta este esto eso esa hay sobre como cual quien cuando donde info dame decime contame deme quiero necesito hace paso pasa pasó tengo tiene todo todos algo alguien mas más muy ya no si sí sos soy vos yo nos ver dar decir mandar mando pendiente pendientes responder respuesta chat chats grupo grupos mensaje mensajes gente"
-    .split(" "),
-);
-
-interface MsgRow {
-  chat_jid: string;
-  chat_kind: string;
-  sender_jid: string;
-  push_name: string | null;
-  from_me: number;
-  ts: string;
-  text: string | null;
-  media_type: string | null;
+const DAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+function nowLabel(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())} (${DAYS[d.getDay()]})`;
 }
 
-const norm = (s: string): string =>
-  s
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
+function buildSystem(facts: string[], summary: string): string {
+  const base = `Sos Memo, un asistente que vive dentro del WhatsApp de la persona (en su chat "Mensajes
+contigo mismo"). Ayudás a manejar el quilombo de WhatsApp: qué tiene pendiente, a quién responder,
+qué pasó en sus chats y grupos. Hablás español rioplatense, concreto y directo, sin vueltas.
 
-function keywords(q: string): string[] {
-  const seen = new Set<string>();
-  for (const raw of norm(q).split(/[^a-z0-9]+/)) {
-    if (raw.length >= 3 && !STOP.has(raw)) seen.add(raw);
-  }
-  return [...seen].slice(0, 8);
+Reglas:
+- NUNCA respondés por la persona ni le escribís a terceros. Si te pide ayuda con una respuesta,
+  sugerí el texto ENTRE PARÉNTESIS para que ella lo copie si quiere.
+- Para saber algo de sus conversaciones, USÁ las herramientas (buscar_mensajes, leer_chat,
+  listar_chats, pendientes). No inventes: si las herramientas no lo traen, decí que no lo ves.
+- Si la persona te enseña un dato sobre sí misma o su gente ("mi mamá es Marta", "tal grupo es mi
+  familia"), guardalo con la herramienta recordar.
+- Si te pide que le recuerdes/avises algo, o un resumen a cierta hora, usá crear_recordatorio.
+- Citá los chats por su nombre. Sé breve.
+
+AHORA (hora local): ${nowLabel()}`;
+  const mem = facts.length ? `\n\nLo que sabés de la persona:\n${facts.map((f) => `- ${f}`).join("\n")}` : "";
+  const sum = summary ? `\n\nResumen de lo que venían hablando:\n${summary}` : "";
+  return base + mem + sum;
 }
 
-// Map chat_jid (stripped) → nombre legible, desde wacli.db (el webhook no trae nombre de chat).
-export function chatNames(): Map<string, string> {
-  const map = new Map<string, string>();
-  try {
-    const src = new Database(join(STORE, "wacli.db"), { readonly: true });
-    const rows = src
-      .prepare(
-        "SELECT chat_jid, chat_name FROM messages WHERE chat_name IS NOT NULL AND chat_name != '' GROUP BY chat_jid",
-      )
-      .all() as Array<{ chat_jid: string; chat_name: string }>;
-    for (const r of rows) map.set(stripDeviceSuffix(r.chat_jid), r.chat_name);
-    src.close();
-  } catch {
-    /* sin nombres → usamos el jid */
-  }
-  return map;
-}
-
-function fmtMsg(m: MsgRow): string {
-  const who = m.from_me ? "vos" : m.push_name || m.sender_jid;
-  const when = m.ts ? m.ts.slice(0, 16).replace("T", " ") : "";
-  const body = (m.text || (m.media_type ? `[${m.media_type}]` : "")).replace(/\s+/g, " ").trim();
-  return `  [${when}] ${who}: ${body}`;
-}
-
-export function buildContext(db: Database.Database, names: Map<string, string>, question: string): string {
-  const kws = keywords(question);
-  const kindOf = new Map<string, string>();
-  const targets: string[] = []; // orden: matches por pregunta primero, luego recientes
-  const add = (jid: string, kind: string) => {
-    if (kind === "self" || kindOf.has(jid)) return;
-    kindOf.set(jid, kind);
-    targets.push(jid);
-  };
-
-  // 2) chats cuyo NOMBRE matchea alguna palabra clave de la pregunta.
-  if (kws.length) {
-    for (const [jid, name] of names) {
-      const n = norm(name);
-      if (kws.some((k) => n.includes(k))) {
-        const kind = jid.endsWith("@g.us") ? "group" : "dm";
-        add(jid, kind);
-      }
-    }
-    // 3) mensajes cuyo TEXTO matchea → sumamos sus chats.
-    const like = db.prepare(
-      "SELECT chat_jid, chat_kind FROM messages WHERE text LIKE ? AND chat_kind != 'self' ORDER BY ts DESC LIMIT ?",
-    );
-    for (const k of kws) {
-      for (const r of like.all(`%${k}%`, TEXT_HITS) as Array<{ chat_jid: string; chat_kind: string }>) {
-        add(r.chat_jid, r.chat_kind);
-      }
-    }
-  }
-
-  // 1) chats más recientes (contexto general), al final.
-  const recent = db
-    .prepare(
-      "SELECT chat_jid, chat_kind, max(ts) AS last FROM messages WHERE chat_kind != 'self' GROUP BY chat_jid ORDER BY last DESC LIMIT ?",
-    )
-    .all(RECENT_CHATS) as Array<{ chat_jid: string; chat_kind: string }>;
-  for (const c of recent) add(c.chat_jid, c.chat_kind);
-
-  const lastN = db.prepare(
-    "SELECT chat_jid, chat_kind, sender_jid, push_name, from_me, ts, text, media_type FROM messages WHERE chat_jid = ? ORDER BY ts DESC LIMIT ?",
-  );
-  const blocks: string[] = [];
-  for (const jid of targets.slice(0, MAX_CHATS)) {
-    const rows = (lastN.all(jid, PER_CHAT) as MsgRow[]).reverse(); // cronológico
-    if (rows.length === 0) continue;
-    const label = names.get(jid) ?? jid;
-    const kind = kindOf.get(jid) === "group" ? "grupo" : "dm";
-    blocks.push(`### ${label} [${kind}]\n${rows.map(fmtMsg).join("\n")}`);
-  }
-  let ctx = blocks.join("\n\n");
-  if (ctx.length > CONTEXT_CHAR_CAP) ctx = `${ctx.slice(0, CONTEXT_CHAR_CAP)}\n…(recortado)`;
-  return ctx;
-}
-
-const SYSTEM = `Sos Memo, un asistente que vive dentro del WhatsApp de la persona. Te paso un
-extracto de sus conversaciones (por chat, en orden cronológico; "vos" = mensajes que mandó la
-persona). Respondé en español rioplatense, concreto y accionable, sin vueltas. Si pregunta qué
-tiene pendiente o a quién responder, buscá conversaciones donde alguien le escribió y parece
-esperar respuesta (el último mensaje no es "vos"). Citá el chat por su nombre. Basate SOLO en el
-contexto; si algo no aparece, decí que no lo ves en las conversaciones recientes en vez de inventar.`;
-
-// Búsqueda semántica: embebe la pregunta y trae los mensajes más parecidos por sqlite-vec.
-// Devuelve fragmentos formateados (con nombre de chat), o "" si no hay índice / falla.
-async function semanticSnippets(
-  store: MemoStore,
-  names: Map<string, string>,
-  question: string,
-  k: number,
-): Promise<string> {
-  if (!store.vecEnabled) return "";
-  try {
-    const [qv] = await embed([question], "query");
-    if (!qv) return "";
-    const rows = store.db
-      .prepare(`
-        SELECT m.chat_jid AS chat_jid, m.from_me AS from_me, m.push_name AS push_name,
-               m.sender_jid AS sender_jid, m.ts AS ts, m.text AS text
-        FROM vec_messages v
-        JOIN messages m ON m.rowid = v.rowid
-        WHERE v.embedding MATCH ? AND k = ?
-        ORDER BY v.distance
-      `)
-      .all(toVecBlob(qv), k) as Array<{
-      chat_jid: string;
-      from_me: number;
-      push_name: string | null;
-      sender_jid: string;
-      ts: string;
-      text: string | null;
-    }>;
-    const lines = rows
-      .filter((r) => (r.text ?? "").trim())
-      .map((r) => {
-        const who = r.from_me ? "vos" : r.push_name || r.sender_jid;
-        const label = names.get(stripDeviceSuffix(r.chat_jid)) ?? r.chat_jid;
-        const when = r.ts ? r.ts.slice(0, 10) : "";
-        return `- [${label}] ${when} ${who}: ${(r.text ?? "").replace(/\s+/g, " ").trim().slice(0, 160)}`;
-      });
-    return lines.length ? `Fragmentos relevantes (búsqueda semántica):\n${lines.join("\n")}` : "";
-  } catch (e) {
-    console.error(`[semantic] ${(e as Error).message}`);
-    return "";
-  }
-}
-
-/** Responde una pregunta de la persona usando contexto recuperado de su WhatsApp. */
+/** Responde un mensaje de la persona corriendo el loop de agente sobre su WhatsApp. */
 export async function askMemo(store: MemoStore, question: string): Promise<string> {
   const names = chatNames();
-  const [snippets, convos] = [
-    await semanticSnippets(store, names, question, 24),
-    buildContext(store.db, names, question),
-  ];
-  const context = [snippets, convos].filter(Boolean).join("\n\n");
-  const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM },
-    {
-      role: "user",
-      content: `Contexto recuperado de sus conversaciones:\n\n${context}\n\n---\nMensaje de la persona: ${question}`,
-    },
-  ];
-  return chat(messages, { maxTokens: 900 });
+  saveTurn(store, "user", question);
+  const { summary, history } = loadSession(store);
+  const facts = store.listFacts().map((f) => f.text);
+
+  const messages: ChatMessage[] = [{ role: "system", content: buildSystem(facts, summary) }, ...history];
+
+  let answer = "";
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const { content, toolCalls } = await complete(messages, { tools: TOOLS, maxTokens: 900 });
+    if (toolCalls.length === 0) {
+      answer = content.trim();
+      break;
+    }
+    // El assistant pidió herramientas: registramos su turno y ejecutamos cada una.
+    messages.push({ role: "assistant", content: content || "", tool_calls: toolCalls });
+    for (const tc of toolCalls) {
+      const result = await runTool(store, names, tc.function.name, tc.function.arguments);
+      messages.push({ role: "tool", tool_call_id: tc.id, name: tc.function.name, content: result });
+    }
+  }
+
+  if (!answer) answer = "Uf, me enrosqué buscando eso. ¿Lo reformulás?";
+  saveTurn(store, "assistant", answer);
+  await maybeCompact(store);
+  return answer;
 }

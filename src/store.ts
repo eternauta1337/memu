@@ -10,6 +10,28 @@ import type { MemoMessage } from "./ingest.ts";
 
 const VEC_DIM = 384; // multilingual-e5-small (ver embeddings.ts). Mantener en sync.
 
+/** Recurrencia de un reminder: null = una sola vez. "daily", "weekdays" (lun-vie), o
+ *  "weekly:N" con N = día de la semana 0..6 (0 = domingo). */
+export type Recurrence = string | null;
+
+export interface Reminder {
+  id: number;
+  text: string;
+  action: "message" | "digest";
+  fireAt: number; // epoch ms de la próxima ejecución
+  recurrence: Recurrence;
+  status: "pending" | "done" | "cancelled";
+  createdAt: string;
+  lastFiredAt: string | null;
+}
+
+export interface NewReminder {
+  text: string;
+  action: "message" | "digest";
+  fireAt: number;
+  recurrence?: Recurrence;
+}
+
 export interface MemoStore {
   db: Database.Database;
   /** true si sqlite-vec cargó y la tabla `vec_messages` existe (búsqueda semántica disponible). */
@@ -18,6 +40,46 @@ export interface MemoStore {
   save(m: MemoMessage): boolean;
   /** Total de mensajes guardados. */
   count(): number;
+  /** Crea un reminder. Devuelve el id asignado. */
+  addReminder(r: NewReminder): number;
+  /** Reminders pendientes ya vencidos (fireAt <= nowMs), del más viejo al más nuevo. */
+  dueReminders(nowMs: number): Reminder[];
+  /** Reminders pendientes (para listar/cancelar), del más próximo al más lejano. */
+  pendingReminders(): Reminder[];
+  /** Marca un reminder como disparado: lo re-agenda a nextFireMs, o lo cierra si es null. */
+  markFired(id: number, nextFireMs: number | null): void;
+  /** Cancela un reminder pendiente. Devuelve true si había uno pendiente con ese id. */
+  cancelReminder(id: number): boolean;
+
+  /** Agrega un turno al diálogo del self-chat. Devuelve el id del turno. */
+  appendTurn(role: "user" | "assistant", content: string): number;
+  /** Turnos con id > afterId, en orden cronológico. */
+  turnsAfter(afterId: number): Turn[];
+
+  /** Agrega un hecho a la memoria del usuario. Devuelve su id. */
+  addFact(text: string): number;
+  /** Todos los hechos que la persona le enseñó a Memo, del más viejo al más nuevo. */
+  listFacts(): Fact[];
+  /** Borra un hecho. Devuelve true si existía. */
+  deleteFact(id: number): boolean;
+
+  /** Lee un valor del estado de sesión (o null). */
+  getState(key: string): string | null;
+  /** Guarda un valor en el estado de sesión (upsert). */
+  setState(key: string, value: string): void;
+}
+
+export interface Turn {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  ts: string;
+}
+
+export interface Fact {
+  id: number;
+  text: string;
+  createdAt: string;
 }
 
 export function openStore(dbPath: string): MemoStore {
@@ -44,6 +106,40 @@ export function openStore(dbPath: string): MemoStore {
       ingested_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, ts);
+
+    CREATE TABLE IF NOT EXISTS reminders (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      text          TEXT NOT NULL,
+      action        TEXT NOT NULL DEFAULT 'message',  -- 'message' | 'digest'
+      fire_at       INTEGER NOT NULL,                 -- epoch ms de la próxima ejecución
+      recurrence    TEXT,                             -- null | 'daily' | 'weekdays' | 'weekly:N'
+      status        TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'done' | 'cancelled'
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      last_fired_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
+
+    -- Diálogo del self-chat con Memo (persistimos ambos lados: los envíos de Memo NO vuelven
+    -- por el webhook, así que hay que guardarlos acá para tener memoria conversacional).
+    CREATE TABLE IF NOT EXISTS conversation (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      role    TEXT NOT NULL,   -- 'user' | 'assistant'
+      content TEXT NOT NULL,
+      ts      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Hechos que la persona le enseña a Memo ("mi mamá es Marta", "el grupo X es mi familia").
+    CREATE TABLE IF NOT EXISTS user_memory (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      text       TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Estado de la sesión (resumen compactado, cutoff de turnos, etc.) como key/value.
+    CREATE TABLE IF NOT EXISTS session_state (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   // sqlite-vec: tabla virtual de vectores, linkeada a messages por rowid. Best-effort: si la
@@ -66,9 +162,93 @@ export function openStore(dbPath: string): MemoStore {
        @mediaType, @mediaMime, @mediaName, @reactionEmoji, @replyToId, @revoked)
   `);
 
+  const insertReminder = db.prepare(
+    "INSERT INTO reminders (text, action, fire_at, recurrence) VALUES (@text, @action, @fireAt, @recurrence)",
+  );
+  const selDue = db.prepare(
+    "SELECT * FROM reminders WHERE status = 'pending' AND fire_at <= ? ORDER BY fire_at ASC",
+  );
+  const selPending = db.prepare("SELECT * FROM reminders WHERE status = 'pending' ORDER BY fire_at ASC");
+  const updFired = db.prepare(
+    "UPDATE reminders SET fire_at = @fireAt, status = @status, last_fired_at = datetime('now') WHERE id = @id",
+  );
+  const updCancel = db.prepare("UPDATE reminders SET status = 'cancelled' WHERE id = ? AND status = 'pending'");
+
+  const insTurn = db.prepare("INSERT INTO conversation (role, content) VALUES (?, ?)");
+  const selTurns = db.prepare("SELECT id, role, content, ts FROM conversation WHERE id > ? ORDER BY id ASC");
+  const insFact = db.prepare("INSERT INTO user_memory (text) VALUES (?)");
+  const selFacts = db.prepare("SELECT id, text, created_at FROM user_memory ORDER BY id ASC");
+  const delFact = db.prepare("DELETE FROM user_memory WHERE id = ?");
+  const getSt = db.prepare("SELECT value FROM session_state WHERE key = ?");
+  const setSt = db.prepare(
+    "INSERT INTO session_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  );
+
+  const rowToReminder = (r: Record<string, unknown>): Reminder => ({
+    id: r.id as number,
+    text: r.text as string,
+    action: r.action as "message" | "digest",
+    fireAt: r.fire_at as number,
+    recurrence: (r.recurrence as string | null) ?? null,
+    status: r.status as "pending" | "done" | "cancelled",
+    createdAt: r.created_at as string,
+    lastFiredAt: (r.last_fired_at as string | null) ?? null,
+  });
+
   return {
     db,
     vecEnabled,
+    addReminder(r: NewReminder): number {
+      const res = insertReminder.run({
+        text: r.text,
+        action: r.action,
+        fireAt: Math.floor(r.fireAt),
+        recurrence: r.recurrence ?? null,
+      });
+      return Number(res.lastInsertRowid);
+    },
+    dueReminders(nowMs: number): Reminder[] {
+      return (selDue.all(Math.floor(nowMs)) as Array<Record<string, unknown>>).map(rowToReminder);
+    },
+    pendingReminders(): Reminder[] {
+      return (selPending.all() as Array<Record<string, unknown>>).map(rowToReminder);
+    },
+    markFired(id: number, nextFireMs: number | null): void {
+      updFired.run({
+        id,
+        fireAt: nextFireMs != null ? Math.floor(nextFireMs) : 0,
+        status: nextFireMs != null ? "pending" : "done",
+      });
+    },
+    cancelReminder(id: number): boolean {
+      return updCancel.run(id).changes > 0;
+    },
+    appendTurn(role: "user" | "assistant", content: string): number {
+      return Number(insTurn.run(role, content).lastInsertRowid);
+    },
+    turnsAfter(afterId: number): Turn[] {
+      return selTurns.all(afterId) as Turn[];
+    },
+    addFact(text: string): number {
+      return Number(insFact.run(text).lastInsertRowid);
+    },
+    listFacts(): Fact[] {
+      return (selFacts.all() as Array<{ id: number; text: string; created_at: string }>).map((r) => ({
+        id: r.id,
+        text: r.text,
+        createdAt: r.created_at,
+      }));
+    },
+    deleteFact(id: number): boolean {
+      return delFact.run(id).changes > 0;
+    },
+    getState(key: string): string | null {
+      const r = getSt.get(key) as { value: string } | undefined;
+      return r?.value ?? null;
+    },
+    setState(key: string, value: string): void {
+      setSt.run(key, value);
+    },
     save(m: MemoMessage): boolean {
       // better-sqlite3 no acepta undefined/boolean como binding → null / 0|1.
       const r = insert.run({

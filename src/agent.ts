@@ -12,6 +12,52 @@ import { runTool, TOOLS } from "./tools.ts";
 export { chatNames };
 
 const MAX_STEPS = 6; // tope de rondas de tool-calling por mensaje
+const MAX_OUTPUT = 900; // tokens de salida por respuesta (reservados del budget)
+
+// Budget de contexto: garantizamos que lo que mandamos entra en la ventana del modelo. La
+// compactación acota por turnos; esto acota por TOKENS (lo que de verdad importa), atajando el
+// caso que los turnos no ven: resultados de tools que se acumulan dentro del loop.
+const CONTEXT_TOKENS = Number(process.env.LLM_CONTEXT_TOKENS) || 131072; // gemma4-31b: 128k
+const SAFETY_MARGIN = 4096; // colchón para el ruido de la estimación chars/4
+const TOKEN_BUDGET = CONTEXT_TOKENS - MAX_OUTPUT - SAFETY_MARGIN;
+const TOOL_CAP_CHARS = 8000; // ~2k tokens: tope por resultado de tool cuando hay que recortar
+
+// Estimación barata de tokens (sin tokenizer): ~4 chars/token. Sobreestimamos un poco a propósito.
+const estTokens = (s?: string | null): number => Math.ceil((s?.length ?? 0) / 4);
+function msgTokens(m: ChatMessage): number {
+  let t = 4 + estTokens(m.content);
+  if (m.tool_calls) for (const tc of m.tool_calls) t += 4 + estTokens(tc.function.name) + estTokens(tc.function.arguments);
+  if (m.name) t += estTokens(m.name);
+  return t;
+}
+const totalTokens = (ms: ChatMessage[]): number => ms.reduce((s, m) => s + msgTokens(m), 0);
+
+// Devuelve una vista de `messages` que entra en el budget. Estrategia, en orden: (1) recorta los
+// resultados de tools grandes (in-place: quedan recortados para las rondas siguientes también);
+// (2) dropea historial plano viejo, preservando SIEMPRE el system y el último turno de la persona.
+// Los turnos dropeados no se pierden: siguen en la tabla `conversation` (y ya en el `summary`).
+function fitToBudget(messages: ChatMessage[]): ChatMessage[] {
+  if (totalTokens(messages) > TOKEN_BUDGET) {
+    for (const m of messages) {
+      if (m.role === "tool" && m.content && m.content.length > TOOL_CAP_CHARS) {
+        m.content = `${m.content.slice(0, TOOL_CAP_CHARS)}\n…(recortado por límite de contexto)`;
+      }
+    }
+  }
+  const out = messages.slice();
+  let dropped = 0;
+  while (totalTokens(out) > TOKEN_BUDGET) {
+    const lastUser = out.reduce((acc, m, i) => (m.role === "user" && !m.tool_calls ? i : acc), -1);
+    const idx = out.findIndex(
+      (m, i) => i !== 0 && i !== lastUser && (m.role === "user" || m.role === "assistant") && !m.tool_calls,
+    );
+    if (idx === -1) break; // no queda nada seguro para dropear → se manda y, si no entra, cae al fallback
+    out.splice(idx, 1);
+    dropped++;
+  }
+  if (dropped) console.error(`[budget] dropeé ${dropped} turnos viejos para entrar en contexto`);
+  return out;
+}
 
 const DAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
 function nowLabel(): string {
@@ -36,7 +82,9 @@ Reglas:
 - Citá los chats por su nombre. Sé breve.
 
 AHORA (hora local): ${nowLabel()}`;
-  const mem = facts.length ? `\n\nLo que sabés de la persona:\n${facts.map((f) => `- ${f}`).join("\n")}` : "";
+  // Cap defensivo: el system no se puede dropear en el budget, así que acotamos los hechos.
+  const shown = facts.slice(-200);
+  const mem = shown.length ? `\n\nLo que sabés de la persona:\n${shown.map((f) => `- ${f}`).join("\n")}` : "";
   const sum = summary ? `\n\nResumen de lo que venían hablando:\n${summary}` : "";
   return base + mem + sum;
 }
@@ -52,7 +100,7 @@ export async function askMemo(store: MemoStore, question: string): Promise<strin
 
   let answer = "";
   for (let step = 0; step < MAX_STEPS; step++) {
-    const { content, toolCalls } = await complete(messages, { tools: TOOLS, maxTokens: 900 });
+    const { content, toolCalls } = await complete(fitToBudget(messages), { tools: TOOLS, maxTokens: MAX_OUTPUT });
     if (toolCalls.length === 0) {
       answer = content.trim();
       break;

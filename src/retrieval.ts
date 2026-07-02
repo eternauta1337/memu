@@ -47,17 +47,30 @@ function keywords(q: string): string[] {
   return [...seen].slice(0, 8);
 }
 
-// Map chat_jid (stripped) → nombre legible, desde wacli.db.
+// Map chat_jid (stripped) → nombre legible, desde wacli.db. Combina dos fuentes: la tabla
+// `contacts` (nombre de agenda, base) y `messages.chat_name` (título que ve el usuario, incluye
+// grupos) que pisa a la anterior. Los JIDs están en formato teléfono, que es a lo que
+// canonicalizamos en la ingesta (ver lidmap.ts).
 export function chatNames(): Map<string, string> {
   const map = new Map<string, string>();
   try {
     const src = new Database(join(STORE, "wacli.db"), { readonly: true });
-    const rows = src
+    // 1) nombres de contacto (agenda): mejor nombre disponible por JID.
+    const contacts = src
+      .prepare(
+        `SELECT jid, COALESCE(NULLIF(full_name,''), NULLIF(push_name,''), NULLIF(business_name,''),
+                NULLIF(first_name,'')) AS name
+         FROM contacts WHERE COALESCE(full_name, push_name, business_name, first_name, '') != ''`,
+      )
+      .all() as Array<{ jid: string; name: string }>;
+    for (const r of contacts) map.set(stripDeviceSuffix(r.jid), r.name);
+    // 2) título del chat (lo que el usuario ve; imprescindible para grupos) → pisa al de agenda.
+    const chats = src
       .prepare(
         "SELECT chat_jid, chat_name FROM messages WHERE chat_name IS NOT NULL AND chat_name != '' GROUP BY chat_jid",
       )
       .all() as Array<{ chat_jid: string; chat_name: string }>;
-    for (const r of rows) map.set(stripDeviceSuffix(r.chat_jid), r.chat_name);
+    for (const r of chats) map.set(stripDeviceSuffix(r.chat_jid), r.chat_name);
     src.close();
   } catch {
     /* sin nombres → usamos el jid */

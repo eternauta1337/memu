@@ -14,6 +14,7 @@ import { askMemo } from "./agent.ts";
 import { generateDigest } from "./digest.ts";
 import { normalizeForMemo } from "./ingest.ts";
 import { embedMissing } from "./indexer.ts";
+import { openLidMap } from "./lidmap.ts";
 import { nextFire } from "./reminders.ts";
 import { openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
@@ -43,10 +44,17 @@ async function main(): Promise<void> {
   const store = openStore(DB);
   console.log(dim(`store: ${DB} (${store.count()} mensajes ya guardados)`));
 
-  // Identidades propias para detectar el self-chat: sembramos el JID de teléfono y aprendemos
-  // el/los LID propios del SenderJID de los mensajes FromMe (ver nota en ingest.ts).
+  // Mapa LID↔teléfono (whatsmeow, read-only): canonicaliza los `@lid` vivos a JID de teléfono
+  // para que matcheen el histórico y los nombres (ver lidmap.ts).
+  const lidmap = openLidMap(STORE);
+  const resolve = lidmap.resolve;
+
+  // Identidades propias para detectar el self-chat, ya canonicalizadas a JID de teléfono.
+  // Sembramos el linked_jid y el teléfono del auth status; además aprendemos del SenderJID de
+  // los mensajes FromMe (canonicalizado) como red de seguridad.
   const ownIds = new Set<string>();
-  if (ownJid) ownIds.add(stripDeviceSuffix(ownJid));
+  if (ownJid) ownIds.add(resolve(stripDeviceSuffix(ownJid)));
+  if (status.phone) ownIds.add(`${status.phone}@s.whatsapp.net`);
 
   // Loop del self-chat: cuando la persona escribe en "Mensajes contigo mismo", Memo responde
   // ahí. Los envíos de Memo (por wacli) NO vuelven por el webhook → sin feedback loop; igual
@@ -91,8 +99,8 @@ async function main(): Promise<void> {
 
   const webhook = new WacliWebhookServer();
   webhook.onMessage((raw) => {
-    if (raw.FromMe && raw.SenderJID) ownIds.add(stripDeviceSuffix(raw.SenderJID));
-    const m = normalizeForMemo(raw, ownIds);
+    if (raw.FromMe && raw.SenderJID) ownIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
+    const m = normalizeForMemo(raw, ownIds, resolve);
     const saved = store.save(m);
     const tag = m.chatKind === "self" ? "🧠SELF" : m.chatKind === "group" ? "👥GRP " : "💬DM  ";
     const dir = m.fromMe ? "→" : "←";
@@ -190,6 +198,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     if (embedTimer) clearInterval(embedTimer);
     clearInterval(reminderTimer);
+    lidmap.close();
     console.log(`\n${dim("cerrando…")} total en DB: ${store.count()}`);
     if (proc && !proc.killed) proc.kill("SIGTERM");
     setTimeout(() => process.exit(0), 800).unref();

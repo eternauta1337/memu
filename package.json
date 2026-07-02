@@ -8,6 +8,7 @@
     "pair": "tsx src/pair.ts",
     "ingest": "tsx src/index.ts",
     "import-history": "tsx src/import-history.ts",
+    "migrate-lids": "tsx src/migrate-lids.ts",
     "ask": "tsx src/ask.ts",
     "embed": "tsx src/embed-index.ts",
     "digest": "tsx src/digest.ts",

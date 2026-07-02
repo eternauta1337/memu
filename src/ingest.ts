@@ -49,14 +49,19 @@ export interface MemoMessage {
  * está en ese set es el self-chat ("Mensajes contigo mismo").
  *
  * OJO identidad LID↔teléfono: el webhook en vivo entrega DMs/self en formato `@lid`, mientras
- * que `wacli.db` los guarda como `@s.whatsapp.net`. Por eso NO alcanza con el JID de teléfono
- * del `auth status`; el runner aprende el LID propio del `SenderJID` de los mensajes `FromMe`
- * (cuando el mensaje es propio, el sender somos nosotros) y lo va sumando a `ownIds`.
- * Pura (sin I/O) → testeable.
+ * que `wacli.db` los guarda como `@s.whatsapp.net`. El `resolve` (ver lidmap.ts) canonicaliza
+ * `<lid>@lid` → `<pn>@s.whatsapp.net`, así lo vivo matchea el histórico y los nombres. Default
+ * identidad (para tests puros). El self-chat se detecta con `ownIds` (ya canonicalizado).
+ * Pura salvo por el `resolve` inyectado → testeable.
  */
-export function normalizeForMemo(msg: WacliWebhookMessage, ownIds: ReadonlySet<string>): MemoMessage {
-  const chatJid = stripDeviceSuffix(jidToString(msg.Chat));
-  const senderJid = stripDeviceSuffix(msg.SenderJID || chatJid);
+export function normalizeForMemo(
+  msg: WacliWebhookMessage,
+  ownIds: ReadonlySet<string>,
+  resolve: (jid: string) => string = (j) => j,
+): MemoMessage {
+  const rawChat = stripDeviceSuffix(jidToString(msg.Chat));
+  const chatJid = resolve(rawChat);
+  const senderJid = resolve(stripDeviceSuffix(msg.SenderJID || rawChat));
 
   let chatKind: ChatKind = isGroupJid(chatJid) ? "group" : "dm";
   if (ownIds.has(chatJid)) chatKind = "self";

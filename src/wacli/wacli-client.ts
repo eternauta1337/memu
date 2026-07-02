@@ -98,6 +98,12 @@ export class WacliClient {
     return this.runJson<SendResult>(args);
   }
 
+  /** Manda un indicador de presencia: "typing" (composing) o "paused". WhatsApp expira el
+   *  "composing" solo a los pocos segundos → hay que refrescarlo si el trabajo tarda. */
+  async presence(to: string, state: "typing" | "paused"): Promise<void> {
+    await this.runJson(["presence", state, "--to", to]);
+  }
+
   /** Reacciona con un emoji. `reaction=""` lo quita. `sender` hace falta en grupos. */
   async sendReact(
     to: string,

@@ -60,6 +60,13 @@ async function main(): Promise<void> {
     try {
       while (queue.length) {
         const q = queue.shift() as string;
+        // Ack "pensando…": indicador de typing nativo mientras gemma procesa (puede tardar varios
+        // segundos con varias rondas de tools). WhatsApp expira el composing → lo refrescamos.
+        let thinking = true;
+        const pulse = () => client.presence(ownJid, "typing").catch(() => {});
+        void pulse();
+        const typingTimer = setInterval(() => thinking && void pulse(), 5000);
+        typingTimer.unref();
         try {
           const ans = (await askMemo(store, q)).trim();
           if (ans) {
@@ -71,6 +78,10 @@ async function main(): Promise<void> {
         } catch (e) {
           console.log(dim(`[memo] error respondiendo: ${(e as Error)?.message ?? e}`));
           await client.sendText(ownJid, `${MEMO_PREFIX}uf, algo falló procesando eso 🫤`).catch(() => {});
+        } finally {
+          thinking = false;
+          clearInterval(typingTimer);
+          void client.presence(ownJid, "paused").catch(() => {});
         }
       }
     } finally {

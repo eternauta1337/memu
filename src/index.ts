@@ -193,6 +193,12 @@ async function main(): Promise<void> {
 
   let shuttingDown = false;
   let proc: ChildProcess | null = null;
+  // Backoff de reconexión: reconectar el websocket muchas veces seguidas es señal anómala para
+  // WhatsApp (riesgo de que invalide los companion devices). Exponencial con tope, se resetea si
+  // el follow corrió estable. Y si nos deslinkearon, CORTAMOS (no martillamos reconexiones).
+  const MIN_BACKOFF = 2000;
+  const MAX_BACKOFF = 60_000;
+  let backoff = MIN_BACKOFF;
   const startSync = (): void => {
     if (shuttingDown) return;
     const args = [
@@ -208,13 +214,26 @@ async function main(): Promise<void> {
       "--webhook-allow-private",
     ];
     console.log(dim("wacli sync --follow → webhook (Ctrl-C para cortar)"));
+    const startedAt = Date.now();
     proc = spawn(WACLI_BIN, args, { stdio: ["ignore", "inherit", "inherit"], env: process.env });
     proc.once("exit", (code, signal) => {
       proc = null;
-      if (!shuttingDown) {
-        console.log(dim(`sync salió (code=${code} signal=${signal}) — respawn en 2s`));
-        setTimeout(startSync, 2000).unref();
-      }
+      if (shuttingDown) return;
+      // Si corrió estable un rato, reseteamos el backoff; si murió enseguida, lo subimos.
+      const ranMs = Date.now() - startedAt;
+      backoff = ranMs > 60_000 ? MIN_BACKOFF : Math.min(backoff * 2, MAX_BACKOFF);
+      void (async () => {
+        // ¿Nos deslinkearon? Entonces reconectar no sirve y solo hace ruido → cortar y avisar.
+        const st = await client.authStatus().catch(() => null);
+        if (st && !st.authenticated) {
+          console.error(
+            "⚠️  WhatsApp deslinkeó este dispositivo. NO reintento (evito hammerear reconexiones). Corré `pnpm pair` para reconectar.",
+          );
+          return;
+        }
+        console.log(dim(`sync salió (code=${code} signal=${signal}) — respawn en ${backoff / 1000}s`));
+        setTimeout(startSync, backoff).unref();
+      })();
     });
     proc.once("error", (err) => console.error(`sync spawn error: ${String(err)}`));
   };

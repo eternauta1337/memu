@@ -66,7 +66,11 @@ function nowLabel(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())} (${DAYS[d.getDay()]})`;
 }
 
-function buildSystem(facts: string[], summary: string): string {
+const VOICE_NOTE = `\n\nIMPORTANTE: la persona te va a ESCUCHAR (respondés por nota de voz). Sé breve
+y natural, como hablando: 2-4 frases, sin markdown, sin listas ni viñetas, sin emojis, sin URLs.
+Si hay mucho para decir, resumí lo más importante y ofrecé el detalle por texto.`;
+
+function buildSystem(facts: string[], summary: string, voice = false): string {
   const base = `Sos Memo, un asistente que vive dentro del WhatsApp de la persona (en su chat "Mensajes
 contigo mismo"). Ayudás a manejar el quilombo de WhatsApp: qué tiene pendiente, a quién responder,
 qué pasó en sus chats y grupos. Hablás español rioplatense, concreto y directo, sin vueltas.
@@ -86,17 +90,21 @@ AHORA (hora local): ${nowLabel()}`;
   const shown = facts.slice(-200);
   const mem = shown.length ? `\n\nLo que sabés de la persona:\n${shown.map((f) => `- ${f}`).join("\n")}` : "";
   const sum = summary ? `\n\nResumen de lo que venían hablando:\n${summary}` : "";
-  return base + mem + sum;
+  return base + mem + sum + (voice ? VOICE_NOTE : "");
 }
 
-/** Responde un mensaje de la persona corriendo el loop de agente sobre su WhatsApp. */
-export async function askMemo(store: MemoStore, question: string): Promise<string> {
+/** Responde un mensaje de la persona corriendo el loop de agente sobre su WhatsApp.
+ *  `opts.voice` = la respuesta se va a escuchar (nota de voz) → pedimos algo breve y hablado. */
+export async function askMemo(store: MemoStore, question: string, opts?: { voice?: boolean }): Promise<string> {
   const names = chatNames();
   saveTurn(store, "user", question);
   const { summary, history } = loadSession(store);
   const facts = store.listFacts().map((f) => f.text);
 
-  const messages: ChatMessage[] = [{ role: "system", content: buildSystem(facts, summary) }, ...history];
+  const messages: ChatMessage[] = [
+    { role: "system", content: buildSystem(facts, summary, opts?.voice) },
+    ...history,
+  ];
 
   let answer = "";
   for (let step = 0; step < MAX_STEPS; step++) {

@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     SELECT msg_id, chat_jid, sender_jid, sender_name, ts, from_me, text,
            media_type, mime_type, filename, reaction_emoji, quoted_msg_id, revoked
     FROM messages
-    WHERE chat_jid != 'status@broadcast'
+    WHERE chat_jid NOT LIKE '%@broadcast'
     ORDER BY ts ASC
   `).all() as WacliDbRow[];
   console.log(`${rows.length} mensajes en wacli.db`);

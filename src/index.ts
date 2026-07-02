@@ -19,7 +19,7 @@ import { nextFire } from "./reminders.ts";
 import { openStore } from "./store.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
-import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
+import { isBroadcastJid, stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
@@ -101,6 +101,8 @@ async function main(): Promise<void> {
   webhook.onMessage((raw) => {
     if (raw.FromMe && raw.SenderJID) ownIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
     const m = normalizeForMemo(raw, ownIds, resolve);
+    // Los Estados/difusiones no son conversaciones → los ignoramos (ensucian retrieval/pendientes).
+    if (isBroadcastJid(m.chatJid)) return;
     const saved = store.save(m);
     const tag = m.chatKind === "self" ? "🧠SELF" : m.chatKind === "group" ? "👥GRP " : "💬DM  ";
     const dir = m.fromMe ? "→" : "←";

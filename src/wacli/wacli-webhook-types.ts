@@ -57,6 +57,12 @@ export function isGroupJid(jid: string): boolean {
   return jid.endsWith("@g.us");
 }
 
+/** True para JIDs de broadcast (Estados `status@broadcast` y listas de difusión `…@broadcast`).
+ *  No son conversaciones → Memo los ignora (ensucian retrieval y pendientes). */
+export function isBroadcastJid(jid: string): boolean {
+  return jid.endsWith("@broadcast");
+}
+
 /**
  * Saca el sufijo de device-id de un JID. WhatsApp agrega `:<device>` al JID de un
  * participante para desambiguar qué device linkeado mandó el mensaje (ej.

@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoMessage } from "./ingest.ts";
 
-const VEC_DIM = 384; // multilingual-e5-small (ver embeddings.ts). Mantener en sync.
+const VEC_DIM = 768; // gte-multilingual-base (ver embeddings.ts EMBED_DIM). Mantener en sync.
 
 /** Recurrencia de un reminder: null = una sola vez. "daily", "weekdays" (lun-vie), o
  *  "weekly:N" con N = día de la semana 0..6 (0 = domingo). */

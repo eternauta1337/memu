@@ -47,8 +47,8 @@ pnpm send-self "hola desde Memo"
 ### Verificar lo ingerido
 
 ```bash
-sqlite3 data/memo.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kind;"
-sqlite3 data/memo.db "SELECT ts, chat_kind, push_name, substr(text,1,60) FROM messages ORDER BY ts DESC LIMIT 20;"
+sqlite3 data/users/self/memo.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kind;"
+sqlite3 data/users/self/memo.db "SELECT ts, chat_kind, push_name, substr(text,1,60) FROM messages ORDER BY ts DESC LIMIT 20;"
 ```
 
 ## Fase 1 (en curso)

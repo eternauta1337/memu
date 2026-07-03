@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoMessage } from "./ingest.ts";
+import { memoDbPath } from "./users.ts";
 
 const VEC_DIM = 768; // gte-multilingual-base (ver embeddings.ts EMBED_DIM). Mantener en sync.
 
@@ -273,4 +274,31 @@ export function openStore(dbPath: string): MemoStore {
       return (db.prepare("SELECT count(*) AS n FROM messages").get() as { n: number }).n;
     },
   };
+}
+
+// Registro de stores abiertos, uno por usuario. `getStore` abre el memo.db del usuario la
+// primera vez y lo cachea (una conexión por usuario, reusada entre mensajes). Es el punto de
+// entrada multi-tenant: cada usuario ve SOLO su DB (aislación física, ver users.ts).
+const stores = new Map<string, MemoStore>();
+
+/** Store del usuario `userId`, abriéndolo (y cacheándolo) la primera vez. */
+export function getStore(userId: string): MemoStore {
+  let s = stores.get(userId);
+  if (!s) {
+    s = openStore(memoDbPath(userId));
+    stores.set(userId, s);
+  }
+  return s;
+}
+
+/** Cierra todos los stores abiertos (para el shutdown). */
+export function closeAllStores(): void {
+  for (const [id, s] of stores) {
+    try {
+      s.db.close();
+    } catch {
+      /* ya cerrado */
+    }
+    stores.delete(id);
+  }
 }

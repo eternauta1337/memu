@@ -19,16 +19,16 @@ import { embedMissing } from "./indexer.ts";
 import { openLidMap } from "./lidmap.ts";
 import { openMediaIndex } from "./media.ts";
 import { nextFire } from "./reminders.ts";
-import { openStore } from "./store.ts";
+import { closeAllStores, getStore } from "./store.ts";
 import { transcribe } from "./stt.ts";
 import { synthesize } from "./tts.ts";
+import { DEFAULT_USER_ID, memoDbPath } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
 import { isBroadcastJid, stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
-const DB = process.env.MEMO_DB ?? "./data/memo.db";
 const MEMO_PREFIX = "🤖 "; // marca los mensajes de Memo en el self-chat (todos van a la derecha)
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -59,8 +59,8 @@ async function main(): Promise<void> {
   const ownJid = status.linked_jid ?? status.jid ?? null;
   console.log(`✅ Pareado como ${ownJid ?? "?"}${status.phone ? ` (+${status.phone})` : ""}`);
 
-  const store = openStore(DB);
-  console.log(dim(`store: ${DB} (${store.count()} mensajes ya guardados)`));
+  const store = getStore(DEFAULT_USER_ID);
+  console.log(dim(`store: ${memoDbPath(DEFAULT_USER_ID)} (usuario "${DEFAULT_USER_ID}", ${store.count()} mensajes)`));
 
   // Mapa LID↔teléfono (whatsmeow, read-only): canonicaliza los `@lid` vivos a JID de teléfono
   // para que matcheen el histórico y los nombres (ver lidmap.ts).
@@ -338,6 +338,7 @@ async function main(): Promise<void> {
     lidmap.close();
     media.close();
     console.log(`\n${dim("cerrando…")} total en DB: ${store.count()}`);
+    closeAllStores();
     if (proc && !proc.killed) proc.kill("SIGTERM");
     setTimeout(() => process.exit(0), 800).unref();
   };

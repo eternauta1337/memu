@@ -14,13 +14,13 @@ import "./env.ts";
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import type { ChatKind, MemoMessage } from "./ingest.ts";
-import { openStore } from "./store.ts";
+import { getStore } from "./store.ts";
+import { DEFAULT_USER_ID } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { isGroupJid, stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
-const DB = process.env.MEMO_DB ?? "./data/memo.db";
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 // Fila cruda de la tabla `messages` de whatsmeow (solo las columnas que usamos).
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   `).all() as WacliDbRow[];
   console.log(`${rows.length} mensajes en wacli.db`);
 
-  const store = openStore(DB);
+  const store = getStore(DEFAULT_USER_ID);
   const before = store.count();
   let inserted = 0;
   const importAll = store.db.transaction((batch: WacliDbRow[]) => {

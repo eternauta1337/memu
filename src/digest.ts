@@ -8,11 +8,11 @@
 import "./env.ts";
 import { chatNames } from "./agent.ts";
 import { chat, type ChatMessage } from "./llm.ts";
-import { type MemoStore, openStore } from "./store.ts";
+import { getStore, type MemoStore } from "./store.ts";
+import { DEFAULT_USER_ID } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
-const DB = process.env.MEMO_DB ?? "./data/memo.db";
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 
 const SCAN = 800; // últimos N mensajes a mirar para armar el día
@@ -99,7 +99,7 @@ export async function generateDigest(store: MemoStore): Promise<string> {
 
 async function main(): Promise<void> {
   const send = process.argv.includes("--send");
-  const store = openStore(DB);
+  const store = getStore(DEFAULT_USER_ID);
   const out = await generateDigest(store);
 
   if (!send) {

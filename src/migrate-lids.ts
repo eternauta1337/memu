@@ -8,14 +8,14 @@
 
 import "./env.ts";
 import { openLidMap } from "./lidmap.ts";
-import { openStore } from "./store.ts";
+import { getStore } from "./store.ts";
+import { DEFAULT_USER_ID } from "./users.ts";
 
-const DB = process.env.MEMO_DB ?? "./data/memo.db";
 const STORE = process.env.WACLI_STORE ?? "./data/wacli";
 
 function main(): void {
   const apply = process.argv.includes("--apply");
-  const store = openStore(DB);
+  const store = getStore(DEFAULT_USER_ID);
   const lidmap = openLidMap(STORE);
 
   // JIDs @lid distintos presentes en messages (como chat o como sender).

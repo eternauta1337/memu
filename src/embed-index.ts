@@ -6,13 +6,12 @@
 
 import "./env.ts";
 import { embedMissing } from "./indexer.ts";
-import { openStore } from "./store.ts";
-
-const DB = process.env.MEMO_DB ?? "./data/memo.db";
+import { getStore } from "./store.ts";
+import { DEFAULT_USER_ID } from "./users.ts";
 
 async function main(): Promise<void> {
   const limit = Number(process.argv[2]) || 0;
-  const store = openStore(DB);
+  const store = getStore(DEFAULT_USER_ID);
   if (!store.vecEnabled) {
     console.error("sqlite-vec no está disponible; no puedo indexar embeddings.");
     process.exit(1);

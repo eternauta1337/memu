@@ -64,13 +64,28 @@ export function chatNames(): Map<string, string> {
       )
       .all() as Array<{ jid: string; name: string }>;
     for (const r of contacts) map.set(stripDeviceSuffix(r.jid), r.name);
-    // 2) título del chat (lo que el usuario ve; imprescindible para grupos) → pisa al de agenda.
+    // 2) título del chat desde messages.chat_name (lo que el usuario ve) → pisa al de agenda.
+    //    OJO: wacli guarda el JID como fallback en chat_name cuando no tiene el título, y hay
+    //    valores basura (ej. un nombre de sender que se coló). Por eso: (a) descartamos filas
+    //    donde chat_name == chat_jid, y (b) elegimos el título MÁS FRECUENTE por chat (no uno
+    //    arbitrario del GROUP BY), que es el título real y estable.
     const chats = src
       .prepare(
-        "SELECT chat_jid, chat_name FROM messages WHERE chat_name IS NOT NULL AND chat_name != '' GROUP BY chat_jid",
+        `SELECT chat_jid, chat_name FROM messages
+         WHERE chat_name IS NOT NULL AND chat_name != '' AND chat_name != chat_jid
+         GROUP BY chat_jid, chat_name
+         ORDER BY count(*) ASC`,
       )
       .all() as Array<{ chat_jid: string; chat_name: string }>;
+    // ORDER BY count ASC + set() secuencial ⇒ el más frecuente (último) queda en el mapa.
     for (const r of chats) map.set(stripDeviceSuffix(r.chat_jid), r.chat_name);
+    // 3) título autoritativo de GRUPOS desde la tabla `groups` de wacli → pisa a todo lo anterior.
+    //    Es la fuente correcta y con cobertura casi total; sin esto ~88% de los grupos activos
+    //    resolvían a su propio JID (no se encontraban por nombre).
+    const groups = src
+      .prepare("SELECT jid, name FROM groups WHERE name IS NOT NULL AND name != '' AND name != jid")
+      .all() as Array<{ jid: string; name: string }>;
+    for (const r of groups) map.set(stripDeviceSuffix(r.jid), r.name);
     src.close();
   } catch {
     /* sin nombres → usamos el jid */

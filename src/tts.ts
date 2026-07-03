@@ -1,86 +1,131 @@
-// Text-to-speech local con Piper (rhasspy/piper): TTS neural VITS, CPU, rápido y con voz
-// natural en español rioplatense (es_AR-daniela). Binario + voz viven en ./data/piper (gitignored,
-// bajados aparte). Piper emite PCM crudo y ffmpeg lo encodea a OGG/Opus (nota de voz de wacli). $0.
+// Text-to-speech vía Inworld (API HTTP síncrona, base64 in/out) — el mismo provider que usa
+// proyecto-interno. POST /tts/v1/voice con `Authorization: Basic <INWORLD_API_KEY>` (la runtime key ya
+// viene base64, va tal cual). Devuelve OGG/Opus 48kHz, que es justo la nota de voz de wacli,
+// así que no hace falta transcodear un solo chunk. Cuesta plata (INWORLD_API_KEY).
 //
-// Antes usábamos mms-tts (Transformers.js) pero sonaba robótico. Piper es el upgrade de calidad.
+// La voz default es `<voice-id>` (la voz, clon con acento rioplatense del
+// workspace de la key). Si se rota la key a otro workspace, hay que re-clonar y actualizar.
+//
+// Antes usábamos Piper (local, $0) pero se cambió a Inworld por calidad. El caller (index.ts)
+// ya cae a texto si synthesize() tira, así que un fallo de red/API no deja sin respuesta.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const PIPER_BIN = process.env.PIPER_BIN ?? "./data/piper/piper/piper";
-const PIPER_VOICE = process.env.PIPER_VOICE ?? "./data/piper/es_AR-daniela-high.onnx";
-const PIPER_DIR = dirname(PIPER_BIN); // libs (LD_LIBRARY_PATH) y espeak-ng-data viven acá
+const BASE_URL = process.env.INWORLD_BASE_URL ?? "https://api.inworld.ai";
+const API_KEY = process.env.INWORLD_API_KEY ?? "";
+const TTS_MODEL = process.env.INWORLD_TTS_MODEL ?? "inworld-tts-1.5-max";
+const VOICE = process.env.INWORLD_VOICE_DEFAULT ?? "<voice-id>";
+// Ritmo: Inworld acepta speakingRate 0.5–1.5 (1.0 = normal). Default 0.9 = un toque pausado,
+// honrando el preset "calmado" que el usuario venía usando con Piper. Env-configurable.
+const SPEAKING_RATE = clampRate(Number(process.env.INWORLD_SPEAKING_RATE ?? "0.9"));
+const TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS ?? 60_000);
+const MAX_CHARS = 2_000; // límite por request de Inworld
 
-// Parámetros de voz (elegidos por el usuario: pausada, lenta, calmada). Configurables por env.
-const LENGTH_SCALE = process.env.PIPER_LENGTH_SCALE ?? "1.40"; // ritmo (>1 = más lento)
-const NOISE_SCALE = process.env.PIPER_NOISE_SCALE ?? "0.55"; // timbre estable
-const NOISE_W = process.env.PIPER_NOISE_W ?? "0.60"; // cadencia pareja
-const SENTENCE_SILENCE = process.env.PIPER_SENTENCE_SILENCE ?? "0.70"; // pausa entre frases (s)
+function clampRate(r: number): number {
+  if (!Number.isFinite(r)) return 1.0;
+  return Math.min(1.5, Math.max(0.5, r));
+}
 
-// Sample rate de la voz (del .onnx.json de Piper). Default 22050 (voces "high").
-function voiceSampleRate(): number {
+/** Parte el texto en chunks ≤ MAX_CHARS, cortando en límites de oración/línea cuando se puede. */
+function chunkText(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+  const chunks: string[] = [];
+  let cur = "";
+  for (const piece of text.split(/(?<=[.!?…\n])\s+/)) {
+    if (piece.length > max) {
+      if (cur) {
+        chunks.push(cur);
+        cur = "";
+      }
+      for (let i = 0; i < piece.length; i += max) chunks.push(piece.slice(i, i + max));
+      continue;
+    }
+    if (cur.length + piece.length + 1 > max) {
+      chunks.push(cur);
+      cur = piece;
+    } else {
+      cur = cur ? `${cur} ${piece}` : piece;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+/** UN request a /tts/v1/voice; devuelve el OGG/Opus (base64-decodeado). */
+async function inworldTts(text: string): Promise<Buffer> {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const cfg = JSON.parse(readFileSync(`${PIPER_VOICE}.json`, "utf8")) as { audio?: { sample_rate?: number } };
-    return cfg.audio?.sample_rate ?? 22050;
-  } catch {
-    return 22050;
+    const res = await fetch(`${BASE_URL}/tts/v1/voice`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        voiceId: VOICE,
+        modelId: TTS_MODEL,
+        audioConfig: { audioEncoding: "OGG_OPUS", sampleRateHertz: 48_000, speakingRate: SPEAKING_RATE },
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 400);
+      throw new Error(`inworld /tts/v1/voice → HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+    }
+    const json = (await res.json()) as { audioContent?: string };
+    if (!json.audioContent) throw new Error("inworld /tts/v1/voice: respuesta sin audioContent");
+    return Buffer.from(json.audioContent, "base64");
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") throw new Error(`inworld TTS: timeout (${TIMEOUT_MS}ms)`);
+    throw e;
+  } finally {
+    clearTimeout(to);
   }
 }
-const SAMPLE_RATE = voiceSampleRate();
 
-/** Sintetiza `text` a una nota de voz OGG/Opus en `outPath` (Piper → PCM → ffmpeg → opus). */
-export function synthesize(text: string, outPath: string): Promise<string> {
+/** Concatena varios OGG/Opus con el demuxer concat de ffmpeg (re-multiplexa sin recodificar;
+ *  pegar bytes de Ogg no es confiable por los serials de stream distintos). */
+function concatOgg(parts: Buffer[], outPath: string): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "memo-tts-"));
+  const listPath = join(dir, "list.txt");
+  const lines = parts.map((p, i) => {
+    const pp = join(dir, `part-${i}.ogg`);
+    writeFileSync(pp, p);
+    return `file '${pp}'`;
+  });
+  writeFileSync(listPath, lines.join("\n"), "utf8");
   return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (e: Error) => {
-      if (!settled) {
-        settled = true;
-        reject(e);
-      }
-    };
-
-    const piper = spawn(
-      PIPER_BIN,
-      [
-        "--model", PIPER_VOICE,
-        "--espeak_data", join(PIPER_DIR, "espeak-ng-data"),
-        "--length_scale", LENGTH_SCALE,
-        "--noise_scale", NOISE_SCALE,
-        "--noise_w", NOISE_W,
-        "--sentence_silence", SENTENCE_SILENCE,
-        "--output-raw",
-      ],
-      { env: { ...process.env, LD_LIBRARY_PATH: `${PIPER_DIR}:${process.env.LD_LIBRARY_PATH ?? ""}` } },
-    );
     const ff = spawn("ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y",
-      "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1", "-i", "-",
-      "-c:a", "libopus", "-b:a", "32k", outPath,
+      "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outPath,
     ]);
-
     let err = "";
     ff.stderr.on("data", (d) => (err += d));
-    piper.stderr.on("data", (d) => (err += d)); // piper loguea info acá; solo importa si falla
-
-    piper.on("error", fail);
-    ff.on("error", fail);
-    piper.stdout.pipe(ff.stdin);
-    piper.on("close", (code) => {
-      if (code !== 0) fail(new Error(`piper salió ${code}: ${err.slice(-300)}`));
-    });
+    ff.on("error", reject);
     ff.on("close", (code) => {
-      if (code === 0) {
-        if (!settled) {
-          settled = true;
-          resolve(outPath);
-        }
-      } else {
-        fail(new Error(`ffmpeg opus falló: ${err.slice(-300)}`));
-      }
+      rmSync(dir, { recursive: true, force: true });
+      code === 0 ? resolve() : reject(new Error(`ffmpeg concat falló: ${err.slice(-300)}`));
     });
-
-    piper.stdin.write(text.replace(/\s+/g, " ").trim());
-    piper.stdin.end();
   });
+}
+
+/** Sintetiza `text` a una nota de voz OGG/Opus en `outPath` vía Inworld. Un solo chunk se
+ *  escribe directo; multi-chunk se concatena con ffmpeg. */
+export async function synthesize(text: string, outPath: string): Promise<string> {
+  if (!API_KEY) throw new Error("TTS no configurado: falta INWORLD_API_KEY");
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) throw new Error("nada que sintetizar (texto vacío)");
+
+  const chunks = chunkText(clean, MAX_CHARS);
+  const parts: Buffer[] = [];
+  for (const chunk of chunks) parts.push(await inworldTts(chunk));
+
+  if (parts.length === 1) {
+    writeFileSync(outPath, parts[0]!);
+  } else {
+    await concatOgg(parts, outPath);
+  }
+  return outPath;
 }

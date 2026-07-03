@@ -1,53 +1,45 @@
-// Speech-to-text local (Whisper vía Transformers.js / ONNX, CPU) — mismo stack que embeddings,
-// sin servicio aparte ni GPU. ffmpeg decodifica el audio (opus/.oga u otro) a PCM float32 mono
-// 16kHz, que es lo que Whisper espera. $0.
+// Speech-to-text vía el server Speaches (faster-whisper large-v3-turbo) en GPU. Endpoint
+// OpenAI-compat POST /v1/audio/transcriptions (multipart). Antes: whisper-small in-process
+// (Transformers.js/ONNX, CPU); se movió a la GPU para sacar RAM del proceso node y escalar a
+// multi-usuario (ver <doc interno> §Escalado).
+//
+// Speaches decodifica el audio solo (opus/oga/m4a/…), así que mandamos el archivo tal cual —
+// no hace falta pre-decodificar a PCM con ffmpeg como antes.
+//
+// Wiring DIRECTO (no vía LiteLLM) por consistencia con embeddings y para no tocar el gateway
+// compartido de gemma. STT_URL lo hace configurable si algún día se frontea con LiteLLM.
 
-import { env, pipeline } from "@huggingface/transformers";
-import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 
-const STT_MODEL = process.env.STT_MODEL ?? "Xenova/whisper-small";
-env.cacheDir = process.env.EMBED_CACHE ?? "./data/models";
+const STT_URL = process.env.STT_URL ?? "http://127.0.0.1:5001/v1/audio/transcriptions";
+const STT_MODEL = process.env.STT_MODEL ?? "deepdml/faster-whisper-large-v3-turbo-ct2";
+const STT_LANG = process.env.STT_LANG ?? "es";
+const STT_TIMEOUT_MS = Number(process.env.STT_TIMEOUT_MS ?? 120_000);
 
-type Asr = (
-  audio: Float32Array,
-  opts: Record<string, unknown>,
-) => Promise<{ text?: string }>;
-
-let asrPromise: Promise<Asr> | null = null;
-function getAsr(): Promise<Asr> {
-  if (!asrPromise) asrPromise = pipeline("automatic-speech-recognition", STT_MODEL) as unknown as Promise<Asr>;
-  return asrPromise;
-}
-
-/** Decodifica un archivo de audio a PCM float32 mono 16kHz usando ffmpeg. */
-function decodePcm(file: string): Promise<Float32Array> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "ffmpeg",
-      ["-hide_banner", "-loglevel", "error", "-i", file, "-ar", "16000", "-ac", "1", "-f", "f32le", "-"],
-      { encoding: "buffer", maxBuffer: 1 << 28 },
-      (err, stdout) => {
-        if (err) return reject(err);
-        const buf = stdout as unknown as Buffer;
-        const n = Math.floor(buf.length / 4);
-        // Copiamos a un ArrayBuffer alineado (el Buffer de stdout puede no estar 4-aligned).
-        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + n * 4);
-        resolve(new Float32Array(ab));
-      },
-    );
-  });
-}
-
-/** Transcribe un archivo de audio a texto (español). "" si no hay nada. */
+/** Transcribe un archivo de audio a texto (español). "" si no hay nada reconocible. */
 export async function transcribe(file: string): Promise<string> {
-  const audio = await decodePcm(file);
-  if (audio.length === 0) return "";
-  const asr = await getAsr();
-  const out = await asr(audio, {
-    language: "spanish",
-    task: "transcribe",
-    chunk_length_s: 30, // parte audios largos
-    stride_length_s: 5,
-  });
-  return (out.text ?? "").replace(/\s+/g, " ").trim();
+  const buf = await readFile(file);
+  if (buf.length === 0) return "";
+  const form = new FormData();
+  form.append("file", new Blob([buf]), basename(file));
+  form.append("model", STT_MODEL);
+  form.append("language", STT_LANG);
+
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), STT_TIMEOUT_MS);
+  try {
+    const res = await fetch(STT_URL, { method: "POST", body: form, signal: ctrl.signal });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 300);
+      throw new Error(`STT HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+    }
+    const json = (await res.json()) as { text?: string };
+    return (json.text ?? "").replace(/\s+/g, " ").trim();
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") throw new Error(`STT: timeout (${STT_TIMEOUT_MS}ms)`);
+    throw e;
+  } finally {
+    clearTimeout(to);
+  }
 }

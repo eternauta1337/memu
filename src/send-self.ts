@@ -5,11 +5,12 @@
 //   pnpm send-self hola desde memo # mensaje custom
 
 import "./env.ts";
+import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
 const client = new WacliClient({
   bin: process.env.WACLI_BIN ?? "wacli",
-  store: process.env.WACLI_STORE ?? "./data/wacli",
+  store: wacliStoreDir(DEFAULT_USER_ID),
 });
 
 const msg = process.argv.slice(2).join(" ") || "🧠 Hola, soy Memo. Prueba de self-chat.";

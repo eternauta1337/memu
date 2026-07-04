@@ -10,9 +10,8 @@ import Database from "better-sqlite3";
 import { join } from "node:path";
 import { embed, toVecBlob } from "./embeddings.ts";
 import type { MemoStore } from "./store.ts";
+import { wacliStoreDir } from "./users.ts";
 import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
-
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
 
 const PER_CHAT = 14; // mensajes por chat al leer un chat puntual
 const TEXT_HITS = 40; // tope de mensajes por keyword
@@ -51,10 +50,10 @@ function keywords(q: string): string[] {
 // `contacts` (nombre de agenda, base) y `messages.chat_name` (título que ve el usuario, incluye
 // grupos) que pisa a la anterior. Los JIDs están en formato teléfono, que es a lo que
 // canonicalizamos en la ingesta (ver lidmap.ts).
-export function chatNames(): Map<string, string> {
+export function chatNames(userId: string): Map<string, string> {
   const map = new Map<string, string>();
   try {
-    const src = new Database(join(STORE, "wacli.db"), { readonly: true });
+    const src = new Database(join(wacliStoreDir(userId), "wacli.db"), { readonly: true });
     // 1) nombres de contacto (agenda): mejor nombre disponible por JID.
     const contacts = src
       .prepare(

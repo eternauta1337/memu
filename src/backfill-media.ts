@@ -14,10 +14,11 @@
 import "./env.ts";
 import Database from "better-sqlite3";
 import { join } from "node:path";
+import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+const STORE = wacliStoreDir(DEFAULT_USER_ID);
 const DELAY_MS = Number(process.env.MEDIA_BACKFILL_DELAY_MS) || 20_000; // entre descargas
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

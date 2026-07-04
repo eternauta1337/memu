@@ -22,13 +22,13 @@ import { nextFire } from "./reminders.ts";
 import { closeAllStores, getStore } from "./store.ts";
 import { transcribe } from "./stt.ts";
 import { synthesize } from "./tts.ts";
-import { DEFAULT_USER_ID, memoDbPath } from "./users.ts";
+import { DEFAULT_USER_ID, memoDbPath, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
 import { isBroadcastJid, stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+const STORE = wacliStoreDir(DEFAULT_USER_ID);
 const MEMO_PREFIX = "🤖 "; // marca los mensajes de Memo en el self-chat (todos van a la derecha)
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

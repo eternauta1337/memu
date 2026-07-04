@@ -6,9 +6,10 @@
 
 import "./env.ts";
 import { spawn } from "node:child_process";
+import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 
 const bin = process.env.WACLI_BIN ?? "wacli";
-const store = process.env.WACLI_STORE ?? "./data/wacli";
+const store = wacliStoreDir(DEFAULT_USER_ID);
 
 const phoneIdx = process.argv.indexOf("--phone");
 const phone = phoneIdx >= 0 ? process.argv[phoneIdx + 1] : undefined;

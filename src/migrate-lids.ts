@@ -9,9 +9,9 @@
 import "./env.ts";
 import { openLidMap } from "./lidmap.ts";
 import { getStore } from "./store.ts";
-import { DEFAULT_USER_ID } from "./users.ts";
+import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+const STORE = wacliStoreDir(DEFAULT_USER_ID);
 
 function main(): void {
   const apply = process.argv.includes("--apply");

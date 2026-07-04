@@ -9,10 +9,10 @@ import "./env.ts";
 import { chatNames } from "./agent.ts";
 import { chat, type ChatMessage } from "./llm.ts";
 import { getStore, type MemoStore } from "./store.ts";
-import { DEFAULT_USER_ID } from "./users.ts";
+import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+const STORE = wacliStoreDir(DEFAULT_USER_ID);
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 
 const SCAN = 800; // últimos N mensajes a mirar para armar el día
@@ -82,7 +82,7 @@ rioplatense, para leer de un vistazo:
 Sé conciso y concreto. No inventes: si algo no está en los mensajes, no lo pongas.`;
 
 async function generateBody(store: MemoStore): Promise<string> {
-  const { ctx, n } = buildTodayContext(store.db, chatNames());
+  const { ctx, n } = buildTodayContext(store.db, chatNames(store.userId));
   if (n === 0) return "Hoy estuvo tranquilo — no registré mensajes nuevos en tus chats.";
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM },

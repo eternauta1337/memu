@@ -15,12 +15,12 @@ import Database from "better-sqlite3";
 import { join } from "node:path";
 import type { ChatKind, MemoMessage } from "./ingest.ts";
 import { getStore } from "./store.ts";
-import { DEFAULT_USER_ID } from "./users.ts";
+import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { isGroupJid, stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
-const STORE = process.env.WACLI_STORE ?? "./data/wacli";
+const STORE = wacliStoreDir(DEFAULT_USER_ID);
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 // Fila cruda de la tabla `messages` de whatsmeow (solo las columnas que usamos).

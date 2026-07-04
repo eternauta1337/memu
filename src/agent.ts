@@ -96,7 +96,7 @@ AHORA (hora local): ${nowLabel()}`;
 /** Responde un mensaje de la persona corriendo el loop de agente sobre su WhatsApp.
  *  `opts.voice` = la respuesta se va a escuchar (nota de voz) → pedimos algo breve y hablado. */
 export async function askMemo(store: MemoStore, question: string, opts?: { voice?: boolean }): Promise<string> {
-  const names = chatNames();
+  const names = chatNames(store.userId);
   saveTurn(store, "user", question);
   const { summary, history } = loadSession(store);
   const facts = store.listFacts().map((f) => f.text);

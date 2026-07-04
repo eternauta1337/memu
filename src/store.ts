@@ -35,6 +35,8 @@ export interface NewReminder {
 
 export interface MemoStore {
   db: Database.Database;
+  /** userId dueño de este store (para resolver rutas per-usuario, ej. el wacli store). */
+  userId: string;
   /** true si sqlite-vec cargó y la tabla `vec_messages` existe (búsqueda semántica disponible). */
   vecEnabled: boolean;
   /** Inserta un mensaje. Devuelve true si era nuevo (false si ya estaba: dedup por id). */
@@ -83,7 +85,7 @@ export interface Fact {
   createdAt: string;
 }
 
-export function openStore(dbPath: string): MemoStore {
+export function openStore(dbPath: string, userId = ""): MemoStore {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
@@ -198,6 +200,7 @@ export function openStore(dbPath: string): MemoStore {
 
   return {
     db,
+    userId,
     vecEnabled,
     addReminder(r: NewReminder): number {
       const res = insertReminder.run({
@@ -285,7 +288,7 @@ const stores = new Map<string, MemoStore>();
 export function getStore(userId: string): MemoStore {
   let s = stores.get(userId);
   if (!s) {
-    s = openStore(memoDbPath(userId));
+    s = openStore(memoDbPath(userId), userId);
     stores.set(userId, s);
   }
   return s;

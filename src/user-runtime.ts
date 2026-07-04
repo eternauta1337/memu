@@ -16,6 +16,7 @@ import { type MemoMessage, normalizeForMemo } from "./ingest.ts";
 import { embedMissing } from "./indexer.ts";
 import { openLidMap } from "./lidmap.ts";
 import { openMediaIndex } from "./media.ts";
+import { pruneMediaDir } from "./media-cap.ts";
 import { nextFire } from "./reminders.ts";
 import { getStore, type MemoStore } from "./store.ts";
 import { transcribe } from "./stt.ts";
@@ -25,6 +26,9 @@ import { WacliClient } from "./wacli/wacli-client.ts";
 import { isBroadcastJid, stripDeviceSuffix, type WacliWebhookMessage } from "./wacli/wacli-webhook-types.ts";
 
 const MEMO_PREFIX = "🤖 "; // marca los mensajes de Memo en el self-chat (todos van a la derecha)
+const MEDIA_CAP_BYTES = Number(process.env.MEMO_MEDIA_CAP_MB ?? 500) * 1024 * 1024; // 0 = sin cap
+const MEDIA_CAP_SWEEP_MS = Number(process.env.MEMO_MEDIA_CAP_SWEEP_MS) || 900_000; // 15 min
+const mb = (b: number): number => Math.round(b / 1024 / 1024);
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -323,12 +327,35 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
   const sttTimer = setInterval(() => void sttSweep(), 90_000);
   sttTimer.unref();
 
+  // Cap de media: poda los blobs más viejos si la carpeta del usuario supera MEMO_MEDIA_CAP_MB.
+  // Los mensajes quedan; solo se van los archivos (ver media-cap.ts). Corre al arrancar + c/15min.
+  const mediaDir = join(storeDir, "media");
+  let mediaSweeping = false;
+  const mediaCapSweep = (): void => {
+    if (mediaSweeping || closing || MEDIA_CAP_BYTES <= 0) return;
+    mediaSweeping = true;
+    try {
+      const r = pruneMediaDir(mediaDir, MEDIA_CAP_BYTES);
+      if (r.deleted) {
+        console.log(u(dim(`[media] podé ${r.deleted} archivos: ${mb(r.beforeBytes)}→${mb(r.afterBytes)}MB (cap ${mb(MEDIA_CAP_BYTES)}MB)`)));
+      }
+    } catch (e) {
+      console.log(u(dim(`[media] cap error: ${(e as Error)?.message ?? e}`)));
+    } finally {
+      mediaSweeping = false;
+    }
+  };
+  const mediaTimer = setInterval(mediaCapSweep, MEDIA_CAP_SWEEP_MS);
+  mediaTimer.unref();
+  mediaCapSweep(); // enforce al arrancar
+
   const close = (): void => {
     if (closing) return;
     closing = true;
     if (embedTimer) clearInterval(embedTimer);
     clearInterval(reminderTimer);
     clearInterval(sttTimer);
+    clearInterval(mediaTimer);
     stopFollow();
     lidmap.close();
     media.close();

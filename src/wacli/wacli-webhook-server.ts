@@ -22,36 +22,38 @@ export interface WebhookServerOptions {
   host?: string;
   /** Puerto efímero libre si se omite. */
   port?: number;
-  /** Path del webhook. Default `/wacli`. */
-  path?: string;
+  /** Base del path del webhook. Default `/wacli`; cada usuario postea a `<basePath>/<userId>`. */
+  basePath?: string;
 }
 
 export class WacliWebhookServer {
   private readonly secret: string;
   private readonly host: string;
   private readonly requestedPort: number;
-  private readonly path: string;
+  private readonly basePath: string;
   private server: Server | null = null;
   private boundPort = 0;
-  private handler: ((msg: WacliWebhookMessage) => void | Promise<void>) | null = null;
+  private handler: ((userId: string, msg: WacliWebhookMessage) => void | Promise<void>) | null = null;
 
   constructor(opts?: WebhookServerOptions) {
     this.secret = opts?.secret ?? randomBytes(32).toString("hex");
     this.host = opts?.host ?? "127.0.0.1";
     this.requestedPort = opts?.port ?? 0;
-    this.path = opts?.path ?? "/wacli";
+    this.basePath = opts?.basePath ?? "/wacli";
   }
 
-  get url(): string {
+  /** URL del webhook para un usuario: `http://host:port/wacli/<userId>` (multi-tenant). */
+  urlFor(userId: string): string {
     if (!this.boundPort) throw new Error("webhook server todavía no escucha");
-    return `http://${this.host}:${this.boundPort}${this.path}`;
+    return `http://${this.host}:${this.boundPort}${this.basePath}/${encodeURIComponent(userId)}`;
   }
 
   get webhookSecret(): string {
     return this.secret;
   }
 
-  onMessage(handler: (msg: WacliWebhookMessage) => void | Promise<void>): void {
+  /** Handler por mensaje. Recibe el `userId` extraído del path (`<basePath>/<userId>`). */
+  onMessage(handler: (userId: string, msg: WacliWebhookMessage) => void | Promise<void>): void {
     this.handler = handler;
   }
 
@@ -88,7 +90,11 @@ export class WacliWebhookServer {
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
   ): Promise<void> {
-    if (req.method !== "POST" || req.url !== this.path) {
+    // Ruteo multi-tenant: el path es `<basePath>/<userId>`. Extraemos el userId (un solo segmento).
+    const pathname = req.url ? new URL(req.url, `http://${this.host}`).pathname : "";
+    const prefix = `${this.basePath}/`;
+    const userId = pathname.startsWith(prefix) ? decodeURIComponent(pathname.slice(prefix.length)) : "";
+    if (req.method !== "POST" || !userId || userId.includes("/")) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
       return;
@@ -121,9 +127,9 @@ export class WacliWebhookServer {
 
     if (this.handler) {
       try {
-        await this.handler(msg);
+        await this.handler(userId, msg);
       } catch (err) {
-        console.log(dim(`[webhook] handler threw: ${String(err)} (id ${msg.ID})`));
+        console.log(dim(`[webhook] handler threw: ${String(err)} (u${userId} id ${msg.ID})`));
       }
     }
   }

@@ -6,6 +6,7 @@
 //   pnpm digest --send     # además lo postea en tu self-chat
 
 import "./env.ts";
+import { fileURLToPath } from "node:url";
 import { chatNames } from "./agent.ts";
 import { chat, type ChatMessage } from "./llm.ts";
 import { getStore, type MemoStore } from "./store.ts";
@@ -117,4 +118,6 @@ async function main(): Promise<void> {
   console.log(`Digest enviado al self-chat (${own}): id=${r.id ?? "?"}`);
 }
 
-void main();
+// Solo corre el CLI si este archivo es el entrypoint; NO al importarlo (user-runtime importa
+// generateDigest desde acá) — si no, cada `pnpm ingest` dispararía un digest al arrancar.
+if (process.argv[1] === fileURLToPath(import.meta.url)) void main();

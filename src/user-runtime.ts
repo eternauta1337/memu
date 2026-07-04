@@ -62,12 +62,14 @@ export interface UserRuntimeOptions {
   webhookUrl: string;
   webhookSecret: string;
   wacliBin: string;
+  /** Se llama cuando el usuario está activo en su self-chat (para repriorizar el pool). */
+  onActivity?: () => void;
 }
 
 /** Crea el runtime de un usuario: abre su store, consulta auth, y arma el loop de respuesta y los
  *  sweeps. NO prende el follow (lo hace el caller vía startFollow). */
 export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserRuntime> {
-  const { userId, webhookUrl, webhookSecret, wacliBin } = opts;
+  const { userId, webhookUrl, webhookSecret, wacliBin, onActivity } = opts;
   const storeDir = wacliStoreDir(userId);
   const u = (s: string) => `${dim(`[u${userId}]`)} ${s}`;
 
@@ -188,6 +190,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
 
     const hasContent = Boolean(m.text.trim()) || isAudioType(m.mediaType);
     if (saved && m.chatKind === "self" && hasContent && !m.revoked && !m.reactionEmoji && !sentByMemo.has(m.id)) {
+      onActivity?.(); // el usuario está usando Memo → repriorizar en el pool
       queue.push(m);
       void answerInSelfChat();
     }
@@ -195,12 +198,14 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
 
   // --- Follow (wacli sync --follow) con backoff de reconexión -----------------------------
   let proc: ChildProcess | null = null;
+  let followWanted = false; // el pool quiere este follow prendido (distinto de `closing`)
   const MIN_BACKOFF = 2000;
   const MAX_BACKOFF = 60_000;
   let backoff = MIN_BACKOFF;
 
   const startFollow = (): void => {
     if (closing || proc || !authenticated) return;
+    followWanted = true;
     const args = [
       "sync", "--follow", "--download-media",
       "--store", storeDir,
@@ -213,7 +218,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     proc = spawn(wacliBin, args, { stdio: ["ignore", "inherit", "inherit"], env: process.env });
     proc.once("exit", (code, signal) => {
       proc = null;
-      if (closing) return;
+      if (closing || !followWanted) return; // apagado a propósito (pool/shutdown) → no respawnear
       const ranMs = Date.now() - startedAt;
       backoff = ranMs > 60_000 ? MIN_BACKOFF : Math.min(backoff * 2, MAX_BACKOFF);
       void (async () => {
@@ -231,6 +236,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
   };
 
   const stopFollow = (): void => {
+    followWanted = false;
     if (proc && !proc.killed) proc.kill("SIGTERM");
     proc = null;
   };

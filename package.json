@@ -6,6 +6,7 @@
   "description": "Memo — asistente de WhatsApp (segundo cerebro en el self-chat). Fase 0: ingesta.",
   "scripts": {
     "pair": "tsx src/pair.ts",
+    "add-user": "tsx src/add-user.ts",
     "ingest": "tsx src/index.ts",
     "import-history": "tsx src/import-history.ts",
     "migrate-lids": "tsx src/migrate-lids.ts",

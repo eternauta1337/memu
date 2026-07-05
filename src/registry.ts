@@ -10,7 +10,9 @@ import { dirname } from "node:path";
 
 const REGISTRY_DB = process.env.MEMO_REGISTRY_DB ?? "./data/registry.db";
 
-export type UserStatus = "active" | "paused" | "disabled";
+// 'pending' = creado, pairing en curso (todavía no lo sirve el pool); 'active' = pareado y en
+// servicio; 'paused'/'disabled' = fuera de servicio.
+export type UserStatus = "pending" | "active" | "paused" | "disabled";
 
 export interface User {
   id: number;

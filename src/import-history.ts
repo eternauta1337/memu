@@ -12,6 +12,8 @@
 
 import "./env.ts";
 import Database from "better-sqlite3";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { ingestArchived } from "./archived.ts";
 import type { ChatKind, MemoMessage } from "./ingest.ts";
@@ -21,7 +23,6 @@ import { WacliClient } from "./wacli/wacli-client.ts";
 import { isGroupJid, stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
-const STORE = wacliStoreDir(DEFAULT_USER_ID);
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 // Fila cruda de la tabla `messages` de whatsmeow (solo las columnas que usamos).
@@ -69,14 +70,18 @@ function rowToMemo(row: WacliDbRow, ownPhone: string | null): MemoMessage {
   };
 }
 
-async function main(): Promise<void> {
+/** Importa el histórico de wacli.db → memo.db de un usuario. Reusable: la corre el CLI (dueño) y
+ *  el orquestador al hot-add de un usuario nuevo. Excluye archivados (salvo MEMO_INGEST_ARCHIVED). */
+export async function importHistoryForUser(userId: string): Promise<{ inserted: number; total: number }> {
+  const storeDir = wacliStoreDir(userId);
+  const wacliDbPath = join(storeDir, "wacli.db");
+  if (!existsSync(wacliDbPath)) return { inserted: 0, total: 0 };
+
   // JID de teléfono propio, para detectar el self-chat en el histórico.
-  const client = new WacliClient({ bin: WACLI_BIN, store: STORE });
+  const client = new WacliClient({ bin: WACLI_BIN, store: storeDir });
   const status = await client.authStatus().catch(() => null);
   const ownPhone = status ? stripDeviceSuffix(status.linked_jid ?? status.jid ?? "") || null : null;
-  console.log(`self-chat = ${ownPhone ?? "(desconocido; se importa sin marcar self)"}`);
 
-  const wacliDbPath = join(STORE, "wacli.db");
   const src = new Database(wacliDbPath, { readonly: true });
   // Chats archivados: no se importan (salvo MEMO_INGEST_ARCHIVED=1).
   const archivedFilter = ingestArchived ? "" : "AND chat_jid NOT IN (SELECT jid FROM chats WHERE archived = 1)";
@@ -87,10 +92,8 @@ async function main(): Promise<void> {
     WHERE chat_jid NOT LIKE '%@broadcast' ${archivedFilter}
     ORDER BY ts ASC
   `).all() as WacliDbRow[];
-  console.log(`${rows.length} mensajes en wacli.db${ingestArchived ? "" : " (excluyendo archivados)"}`);
 
-  const store = getStore(DEFAULT_USER_ID);
-  const before = store.count();
+  const store = getStore(userId);
   let inserted = 0;
   const importAll = store.db.transaction((batch: WacliDbRow[]) => {
     for (const row of batch) {
@@ -98,14 +101,20 @@ async function main(): Promise<void> {
     }
   });
   importAll(rows);
-
-  console.log(`\n✅ importados ${inserted} nuevos (${rows.length - inserted} ya estaban)`);
-  console.log(dim(`total en Memo: ${before} → ${store.count()}`));
-  const byKind = store.db
-    .prepare("SELECT chat_kind, count(*) AS n FROM messages GROUP BY chat_kind ORDER BY n DESC")
-    .all() as Array<{ chat_kind: string; n: number }>;
-  for (const k of byKind) console.log(dim(`  ${k.chat_kind}: ${k.n}`));
   src.close();
+  return { inserted, total: rows.length };
 }
 
-void main();
+async function main(): Promise<void> {
+  const userId = DEFAULT_USER_ID;
+  const store = getStore(userId);
+  const before = store.count();
+  console.log(`importando histórico de u${userId}…`);
+  const { inserted, total } = await importHistoryForUser(userId);
+  console.log(`\n✅ importados ${inserted} nuevos (${total - inserted} ya estaban)`);
+  console.log(dim(`total en Memo: ${before} → ${store.count()}`));
+}
+
+// Solo corre el CLI si este archivo es el entrypoint; NO al importarlo (el orquestador importa
+// importHistoryForUser).
+if (process.argv[1] === fileURLToPath(import.meta.url)) void main();

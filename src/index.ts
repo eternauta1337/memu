@@ -8,8 +8,9 @@
 import "./env.ts";
 import { createCentralBot, type CentralBot } from "./central-bot.ts";
 import { createFollowPool } from "./follow-pool.ts";
+import { importHistoryForUser } from "./import-history.ts";
 import { getRegistry } from "./registry.ts";
-import { closeAllStores } from "./store.ts";
+import { closeAllStores, getStore } from "./store.ts";
 import { createUserRuntime, type UserRuntime } from "./user-runtime.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
 
@@ -58,25 +59,50 @@ async function main(): Promise<void> {
     log: (m) => console.log(dim(`[pool] ${m}`)),
   });
 
-  for (const user of users) {
-    const userId = String(user.id);
-    const rt = await createUserRuntime({
-      userId,
-      webhookUrl: webhook.urlFor(userId),
-      webhookSecret: webhook.webhookSecret,
-      wacliBin: WACLI_BIN,
-      onActivity: () => {
-        registry.touchActive(user.id);
-        pool.noteActivity(userId);
-      },
-    });
-    runtimes.set(userId, rt);
-  }
+  // Levanta el runtime de cada usuario activo que todavía no tenga uno (HOT-ADD): así los que se
+  // registran/vinculan por la web entran SIN reiniciar. La primera vez, auto-importa su histórico.
+  const syncUsers = async (): Promise<void> => {
+    let added = 0;
+    for (const user of registry.listUsers({ status: "active" })) {
+      const userId = String(user.id);
+      if (runtimes.has(userId)) continue;
+      const rt = await createUserRuntime({
+        userId,
+        webhookUrl: webhook.urlFor(userId),
+        webhookSecret: webhook.webhookSecret,
+        wacliBin: WACLI_BIN,
+        onActivity: () => {
+          registry.touchActive(user.id);
+          pool.noteActivity(userId);
+        },
+      });
+      runtimes.set(userId, rt);
+      added++;
+      console.log(dim(`[sync] hot-add u${userId}`));
+      // Auto-import del histórico la primera vez (memo.db vacío), en background.
+      void (async () => {
+        try {
+          if (getStore(userId).count() === 0) {
+            const { inserted } = await importHistoryForUser(userId);
+            if (inserted) console.log(dim(`[sync] u${userId} histórico importado: +${inserted}`));
+          }
+        } catch (e) {
+          console.log(dim(`[sync] import u${userId} falló: ${(e as Error)?.message ?? e}`));
+        }
+      })();
+    }
+    if (added) pool.reconcile();
+  };
+
+  await syncUsers();
   const authed = [...runtimes.values()].filter((r) => r.authenticated).length;
   console.log(`✅ ${runtimes.size} usuario(s) · ${authed} pareado(s) · pool cap=${POOL_SIZE} (webhook loopback listo)`);
-  pool.reconcile(); // prende follows escalonados hasta el cap
+  pool.reconcile();
 
-  // Reconcile periódico: llena huecos (follows nuevos / usuarios recién activos). No evicta.
+  // Sync periódico: hot-add de usuarios nuevos (registrados por la web) sin reiniciar.
+  const syncTimer = setInterval(() => void syncUsers(), 30_000);
+  syncTimer.unref();
+  // Reconcile periódico: llena huecos de follows. No evicta.
   const reconcileTimer = setInterval(() => pool.reconcile(), 60_000);
   reconcileTimer.unref();
 
@@ -85,6 +111,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(reconcileTimer);
+    clearInterval(syncTimer);
     console.log(`\n${dim("cerrando…")}`);
     centralBot?.close();
     pool.stopAll();

@@ -128,11 +128,12 @@ const server = createServer((req, res) => {
       const existing = registry.getUserByPhone(phone);
       let userId: number;
       if (existing) {
-        if (existing.status === "active") return send(res, 200, { userId: existing.id, status: "connected" });
         userId = existing.id;
       } else {
-        userId = registry.addUser(phone, { status: "pending" }).id;
+        userId = registry.addUser(phone, { status: "pending", email }).id;
       }
+      if (email) registry.setEmail(userId, email); // atar el login al usuario (para el "¿ya vinculaste?")
+      if (existing?.status === "active") return send(res, 200, { userId, status: "connected" });
       registry.setStatus(userId, "pending");
       startPairing(userId, String(body.phone ?? phone));
       console.log(dim(`[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}`));
@@ -146,6 +147,16 @@ const server = createServer((req, res) => {
         await new Promise((r) => setTimeout(r, 400));
       }
       return send(res, 202, { userId, status: "pairing" }); // sin código aún → que polee /status
+    }
+
+    // GET /user?email= → estado de vinculación del usuario logueado (para el "¿ya vinculaste?").
+    if (req.method === "GET" && url.pathname === "/user") {
+      const email = (url.searchParams.get("email") ?? "").trim().toLowerCase();
+      if (!email) return send(res, 400, { error: "falta email" });
+      const user = registry.getUserByEmail(email);
+      if (!user) return send(res, 200, { status: "none" });
+      const status = user.status === "active" ? "connected" : user.status === "pending" ? "pending" : "none";
+      return send(res, 200, { userId: user.id, status, phone: user.phone });
     }
 
     // GET /status/:userId → estado del pairing.

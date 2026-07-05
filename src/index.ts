@@ -59,37 +59,47 @@ async function main(): Promise<void> {
     log: (m) => console.log(dim(`[pool] ${m}`)),
   });
 
+  // Auto-import del histórico (wacli.db → memo.db) la primera vez. RETRIABLE: si el memo.db sigue
+  // vacío (el backfill del pairing todavía no pobló wacli.db), se reintenta en el próximo tick —
+  // así no se pierde por un race entre el hot-add y el backfill. Al importar algo, deja de correr.
+  const importing = new Set<string>();
+  const maybeImport = (userId: string): void => {
+    if (importing.has(userId) || getStore(userId).count() > 0) return;
+    importing.add(userId);
+    void (async () => {
+      try {
+        const { inserted } = await importHistoryForUser(userId);
+        if (inserted) console.log(dim(`[sync] u${userId} histórico importado: +${inserted}`));
+      } catch (e) {
+        console.log(dim(`[sync] import u${userId} falló: ${(e as Error)?.message ?? e}`));
+      } finally {
+        importing.delete(userId);
+      }
+    })();
+  };
+
   // Levanta el runtime de cada usuario activo que todavía no tenga uno (HOT-ADD): así los que se
-  // registran/vinculan por la web entran SIN reiniciar. La primera vez, auto-importa su histórico.
+  // registran/vinculan por la web entran SIN reiniciar, y les importa su histórico.
   const syncUsers = async (): Promise<void> => {
     let added = 0;
     for (const user of registry.listUsers({ status: "active" })) {
       const userId = String(user.id);
-      if (runtimes.has(userId)) continue;
-      const rt = await createUserRuntime({
-        userId,
-        webhookUrl: webhook.urlFor(userId),
-        webhookSecret: webhook.webhookSecret,
-        wacliBin: WACLI_BIN,
-        onActivity: () => {
-          registry.touchActive(user.id);
-          pool.noteActivity(userId);
-        },
-      });
-      runtimes.set(userId, rt);
-      added++;
-      console.log(dim(`[sync] hot-add u${userId}`));
-      // Auto-import del histórico la primera vez (memo.db vacío), en background.
-      void (async () => {
-        try {
-          if (getStore(userId).count() === 0) {
-            const { inserted } = await importHistoryForUser(userId);
-            if (inserted) console.log(dim(`[sync] u${userId} histórico importado: +${inserted}`));
-          }
-        } catch (e) {
-          console.log(dim(`[sync] import u${userId} falló: ${(e as Error)?.message ?? e}`));
-        }
-      })();
+      if (!runtimes.has(userId)) {
+        const rt = await createUserRuntime({
+          userId,
+          webhookUrl: webhook.urlFor(userId),
+          webhookSecret: webhook.webhookSecret,
+          wacliBin: WACLI_BIN,
+          onActivity: () => {
+            registry.touchActive(user.id);
+            pool.noteActivity(userId);
+          },
+        });
+        runtimes.set(userId, rt);
+        added++;
+        console.log(dim(`[sync] hot-add u${userId}`));
+      }
+      maybeImport(userId); // reintenta hasta que haya histórico para importar
     }
     if (added) pool.reconcile();
   };

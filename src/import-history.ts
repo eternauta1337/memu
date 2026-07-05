@@ -13,6 +13,7 @@
 import "./env.ts";
 import Database from "better-sqlite3";
 import { join } from "node:path";
+import { ingestArchived } from "./archived.ts";
 import type { ChatKind, MemoMessage } from "./ingest.ts";
 import { getStore } from "./store.ts";
 import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
@@ -77,14 +78,16 @@ async function main(): Promise<void> {
 
   const wacliDbPath = join(STORE, "wacli.db");
   const src = new Database(wacliDbPath, { readonly: true });
+  // Chats archivados: no se importan (salvo MEMO_INGEST_ARCHIVED=1).
+  const archivedFilter = ingestArchived ? "" : "AND chat_jid NOT IN (SELECT jid FROM chats WHERE archived = 1)";
   const rows = src.prepare(`
     SELECT msg_id, chat_jid, sender_jid, sender_name, ts, from_me, text,
            media_type, mime_type, filename, reaction_emoji, quoted_msg_id, revoked
     FROM messages
-    WHERE chat_jid NOT LIKE '%@broadcast'
+    WHERE chat_jid NOT LIKE '%@broadcast' ${archivedFilter}
     ORDER BY ts ASC
   `).all() as WacliDbRow[];
-  console.log(`${rows.length} mensajes en wacli.db`);
+  console.log(`${rows.length} mensajes en wacli.db${ingestArchived ? "" : " (excluyendo archivados)"}`);
 
   const store = getStore(DEFAULT_USER_ID);
   const before = store.count();

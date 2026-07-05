@@ -11,6 +11,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { askMemo } from "./agent.ts";
+import { readArchivedJids } from "./archived.ts";
 import { generateDigest } from "./digest.ts";
 import { type MemoMessage, normalizeForMemo } from "./ingest.ts";
 import { embedMissing } from "./indexer.ts";
@@ -95,6 +96,11 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
   const media = openMediaIndex(storeDir);
   const setMsgText = store.db.prepare("UPDATE messages SET text = ? WHERE id = ?");
   let ttsSeq = 0;
+
+  // Chats archivados (no se ingieren). Se refresca cada tanto (el usuario archiva/desarchiva).
+  let archivedJids = readArchivedJids(storeDir);
+  const archivedTimer = setInterval(() => { archivedJids = readArchivedJids(storeDir); }, 300_000);
+  archivedTimer.unref();
 
   const waitForMedia = async (id: string): Promise<string | null> => {
     for (let i = 0; i < 6; i++) {
@@ -185,6 +191,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     if (raw.FromMe && raw.SenderJID) ownIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
     const m = normalizeForMemo(raw, ownIds, resolve);
     if (isBroadcastJid(m.chatJid)) return; // Estados/difusiones no son conversaciones
+    if (archivedJids.has(stripDeviceSuffix(m.chatJid))) return; // chat archivado → no se ingiere
     const saved = store.save(m);
     const tag = m.chatKind === "self" ? "🧠SELF" : m.chatKind === "group" ? "👥GRP " : "💬DM  ";
     const dir = m.fromMe ? "→" : "←";
@@ -350,6 +357,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     if (embedTimer) clearInterval(embedTimer);
     clearInterval(sttTimer);
     clearInterval(mediaTimer);
+    clearInterval(archivedTimer);
     stopFollow();
     lidmap.close();
     media.close();

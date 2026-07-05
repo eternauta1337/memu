@@ -8,6 +8,7 @@
 
 import "./env.ts";
 import { spawn } from "node:child_process";
+import { normalizePhone } from "./phone.ts";
 import { getRegistry } from "./registry.ts";
 import { wacliStoreDir } from "./users.ts";
 
@@ -17,7 +18,11 @@ if (!phone) {
   console.error("Uso: pnpm add-user --phone +59899XXXXXXX");
   process.exit(1);
 }
-const normalized = phone.replace(/[^0-9]/g, ""); // E.164 sin '+' (clave de dedup en el registro)
+const normalized = normalizePhone(phone); // E.164 canónico sin '+' (clave de dedup en el registro)
+if (!normalized) {
+  console.error(`Número inválido: ${phone}. Poné el código de país (ej. +59899…).`);
+  process.exit(1);
+}
 
 const reg = getRegistry();
 const existing = reg.getUserByPhone(normalized);
@@ -32,7 +37,7 @@ console.log(`Usuario ${user.id} creado (phone ${normalized}). Pareando WhatsApp 
 console.log("Ingresá el código en WhatsApp → Dispositivos vinculados → Vincular con número.\n");
 
 const bin = process.env.WACLI_BIN ?? "wacli";
-const child = spawn(bin, ["auth", "--store", store, "--download-media", "--phone", phone], {
+const child = spawn(bin, ["auth", "--store", store, "--download-media", "--phone", `+${normalized}`], {
   stdio: "inherit",
   env: process.env,
 });

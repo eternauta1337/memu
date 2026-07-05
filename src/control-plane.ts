@@ -14,6 +14,7 @@ import "./env.ts";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { normalizePhone } from "./phone.ts";
 import { getRegistry } from "./registry.ts";
 import { wacliStoreDir } from "./users.ts";
 
@@ -28,6 +29,8 @@ const BOOTSTRAP_MS = Number(process.env.CP_BOOTSTRAP_MS ?? 120_000); // margen t
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const registry = getRegistry();
 
+// (la normalización de teléfono vive en phone.ts — E.164 canónico con libphonenumber)
+
 type PairStatus = "pairing" | "connected" | "failed";
 interface Job {
   userId: number;
@@ -38,8 +41,6 @@ interface Job {
 }
 const jobs = new Map<number, Job>();
 
-const normalizePhone = (p: string): string => p.replace(/[^0-9]/g, "");
-
 /** Arranca `wacli auth --phone` para un usuario, parsea los eventos NDJSON y actualiza el job +
  *  el registro. Al conectar → status del usuario 'active'. */
 function startPairing(userId: number, phone: string): void {
@@ -47,7 +48,7 @@ function startPairing(userId: number, phone: string): void {
   const job: Job = { userId, status: "pairing", startedAt: Date.now() };
   jobs.set(userId, job);
 
-  const child = spawn(WACLI_BIN, ["auth", "--phone", phone, "--store", store, "--events"], {
+  const child = spawn(WACLI_BIN, ["auth", "--phone", `+${phone}`, "--store", store, "--events"], {
     stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, WACLI_DEVICE_LABEL: DEVICE_LABEL },
   });
@@ -122,9 +123,11 @@ const server = createServer((req, res) => {
       const body = await readJson(req).catch((): Record<string, unknown> => ({}));
       const email = String(body.email ?? "").trim().toLowerCase() || null;
       const phone = normalizePhone(String(body.phone ?? ""));
-      if (phone.length < 8) return send(res, 400, { error: "teléfono inválido" });
+      if (!phone) {
+        return send(res, 400, { error: "Número inválido. Poné tu WhatsApp con código de país (ej. +54 9 11…)." });
+      }
 
-      // Dedup por teléfono. Si ya está activo, no re-pareamos.
+      // Dedup por teléfono (ya normalizado a E.164). Si ya está activo, no re-pareamos.
       const existing = registry.getUserByPhone(phone);
       let userId: number;
       if (existing) {
@@ -135,7 +138,7 @@ const server = createServer((req, res) => {
       if (email) registry.setEmail(userId, email); // atar el login al usuario (para el "¿ya vinculaste?")
       if (existing?.status === "active") return send(res, 200, { userId, status: "connected" });
       registry.setStatus(userId, "pending");
-      startPairing(userId, String(body.phone ?? phone));
+      startPairing(userId, phone);
       console.log(dim(`[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}`));
 
       // Esperamos brevemente el pair_code para devolverlo en la misma respuesta.

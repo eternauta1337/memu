@@ -11,6 +11,9 @@ importers:
       better-sqlite3:
         specifier: ^11.8.1
         version: 11.10.0
+      libphonenumber-js:
+        specifier: ^1.13.8
+        version: 1.13.8
       sqlite-vec:
         specifier: ^0.1.9
         version: 0.1.9
@@ -256,6 +259,9 @@ packages:
 
   ini@1.3.8:
     resolution: {integrity: sha512-JV/yugV2uzW5iMRSiZAyDtQd+nxtUnjeLt0acNdw98kKLrvuRVyB80tsREOE7yvGVgalhZ6RNXCmEHkUKBKxew==}
+
+  libphonenumber-js@1.13.8:
+    resolution: {integrity: sha512-80xal1m93rADejw2pMp2MSzFhHCPLEspjHxnH2UtqI+DgAmElsbmLMiqk9niwH9NWAfjsRtaJI+qBrOEmRx9nQ==}
 
   mimic-response@3.1.0:
     resolution: {integrity: sha512-z0yWI+4FDrrweS8Zmt4Ej5HdJmky15+L2e6Wgn3+iK5fWzb6T3fhNFq2+MeTRb064c6Wr4N/wv0DzQTjNzHNGQ==}
@@ -541,6 +547,8 @@ snapshots:
   inherits@2.0.4: {}
 
   ini@1.3.8: {}
+
+  libphonenumber-js@1.13.8: {}
 
   mimic-response@3.1.0: {}
 

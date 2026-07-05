@@ -6,6 +6,7 @@
 // Correr: `pnpm ingest` (tras `pnpm add-user` / `pnpm pair`). Ctrl-C para cortar.
 
 import "./env.ts";
+import { createCentralBot, type CentralBot } from "./central-bot.ts";
 import { createFollowPool } from "./follow-pool.ts";
 import { getRegistry } from "./registry.ts";
 import { closeAllStores } from "./store.ts";
@@ -27,12 +28,26 @@ async function main(): Promise<void> {
   // Un webhook compartido para todos; el userId sale del path (`/wacli/<userId>`).
   const webhook = new WacliWebhookServer();
   const runtimes = new Map<string, UserRuntime>();
+  let centralBot: CentralBot | null = null;
   webhook.onMessage((userId, raw) => {
+    if (userId === "central") {
+      centralBot?.handleWebhook(raw); // DM al número central → ruteo por remitente
+      return;
+    }
     const rt = runtimes.get(userId);
     if (rt) rt.handleWebhook(raw);
     else console.log(dim(`[webhook] mensaje para usuario desconocido u${userId} — ignorado`));
   });
   await webhook.listen();
+
+  // Bot central: la conexión ÚNICA (número dedicado) por donde la gente conversa con Memo —
+  // recibe DMs, identifica al usuario por su teléfono y corre su agente (ver central-bot.ts).
+  centralBot = await createCentralBot({
+    webhookUrl: webhook.urlFor("central"),
+    webhookSecret: webhook.webhookSecret,
+    wacliBin: WACLI_BIN,
+  });
+  centralBot.startFollow();
 
   // Pool de follows: decide QUÉ usuarios tienen `wacli sync --follow` (cap + escalonado).
   const pool = createFollowPool({
@@ -71,6 +86,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     clearInterval(reconcileTimer);
     console.log(`\n${dim("cerrando…")}`);
+    centralBot?.close();
     pool.stopAll();
     for (const rt of runtimes.values()) rt.close();
     closeAllStores();

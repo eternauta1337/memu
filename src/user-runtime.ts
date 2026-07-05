@@ -192,12 +192,8 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     const body = (m.text || m.reactionEmoji || "").replace(/\s+/g, " ").slice(0, 80);
     console.log(u(`${tag} ${dir} ${m.pushName || m.senderJid}: ${body}${mediaTag}${saved ? "" : dim(" (dup)")}`));
 
-    const hasContent = Boolean(m.text.trim()) || isAudioType(m.mediaType);
-    if (saved && m.chatKind === "self" && hasContent && !m.revoked && !m.reactionEmoji && !sentByMemo.has(m.id)) {
-      onActivity?.(); // el usuario está usando Memo → repriorizar en el pool
-      queue.push(m);
-      void answerInSelfChat();
-    }
+    // La CHARLA se mudó al bot central (central-bot.ts): este runtime solo LEE los chats del
+    // usuario para armar su segundo cerebro (ingesta + embeddings + STT). No responde acá.
   };
 
   // --- Follow (wacli sync --follow) con backoff de reconexión -----------------------------
@@ -282,9 +278,8 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
       firing = false;
     }
   };
-  const reminderTimer = setInterval(() => void fireDueReminders(), 30_000);
-  reminderTimer.unref();
-  if (ownJid) void fireDueReminders(); // catch-up inicial
+  // Los reminders/digests ahora los dispara el bot central (central-bot.ts), que le escribe a
+  // cada usuario a su número. Acá NO se agendan (si no, saldrían duplicados).
 
   const selUntranscribed = store.db.prepare(
     "SELECT id FROM messages WHERE media_type IN ('audio','ptt') AND (text IS NULL OR text = '') AND revoked = 0 ORDER BY ts DESC LIMIT ?",
@@ -353,7 +348,6 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     if (closing) return;
     closing = true;
     if (embedTimer) clearInterval(embedTimer);
-    clearInterval(reminderTimer);
     clearInterval(sttTimer);
     clearInterval(mediaTimer);
     stopFollow();

@@ -2,3 +2,6 @@ node_modules/
 data/
 .env
 *.log
+
+# backup de la migración memo→memu (local, no versionar)
+data.bak*/

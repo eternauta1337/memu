@@ -27,6 +27,9 @@ export interface User {
   subscriptionStatus: string | null;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
+  /** Fase de onboarding post-pairing: 'indexando' (leyendo el historial) → 'activo' (listo).
+   *  null = legacy/activo (usuarios previos a la feature). Ver central-bot.ts. */
+  onboardingState: string | null;
 }
 
 export interface Registry {
@@ -43,6 +46,8 @@ export interface Registry {
   setEmail(id: number, email: string): void;
   /** Actualiza los campos de suscripción provistos (Stripe). Los `undefined` no se tocan. */
   setBilling(id: number, fields: { status?: string; customerId?: string; subscriptionId?: string }): void;
+  /** Fase de onboarding post-pairing ('indexando' | 'activo'). */
+  setOnboardingState(id: number, state: string): void;
   /** Marca actividad (para la priorización del pool de follows). */
   touchActive(id: number): void;
 
@@ -69,6 +74,7 @@ const rowToUser = (r: Record<string, unknown>): User => ({
   subscriptionStatus: (r.subscription_status as string | null) ?? null,
   stripeCustomerId: (r.stripe_customer_id as string | null) ?? null,
   stripeSubscriptionId: (r.stripe_subscription_id as string | null) ?? null,
+  onboardingState: (r.onboarding_state as string | null) ?? null,
 });
 
 export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
@@ -91,8 +97,13 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   } catch {
     /* ya existe */
   }
-  // Migración idempotente: campos de suscripción (Stripe, Fase B).
-  for (const col of ["subscription_status TEXT", "stripe_customer_id TEXT", "stripe_subscription_id TEXT"]) {
+  // Migración idempotente: campos de suscripción (Stripe, Fase B) + fase de onboarding.
+  for (const col of [
+    "subscription_status TEXT",
+    "stripe_customer_id TEXT",
+    "stripe_subscription_id TEXT",
+    "onboarding_state TEXT",
+  ]) {
     try {
       db.exec(`ALTER TABLE users ADD COLUMN ${col}`);
     } catch {
@@ -123,6 +134,7 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   const updStatus = db.prepare("UPDATE users SET status = ? WHERE id = ?");
   const updEmail = db.prepare("UPDATE users SET email = ? WHERE id = ?");
   const updSubStatus = db.prepare("UPDATE users SET subscription_status = ? WHERE id = ?");
+  const updOnbState = db.prepare("UPDATE users SET onboarding_state = ? WHERE id = ?");
   const updCustomer = db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ?");
   const updSubId = db.prepare("UPDATE users SET stripe_subscription_id = ? WHERE id = ?");
   const updActive = db.prepare("UPDATE users SET last_active_at = datetime('now') WHERE id = ?");
@@ -177,6 +189,9 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
       if (fields.status !== undefined) updSubStatus.run(fields.status, id);
       if (fields.customerId !== undefined) updCustomer.run(fields.customerId, id);
       if (fields.subscriptionId !== undefined) updSubId.run(fields.subscriptionId, id);
+    },
+    setOnboardingState(id, state) {
+      updOnbState.run(state, id);
     },
     touchActive(id) {
       updActive.run(id);

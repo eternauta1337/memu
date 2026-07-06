@@ -72,7 +72,13 @@ function startPairing(userId: number, phone: string): void {
     job.status = status;
     if (error) job.error = error;
     registry.setStatus(userId, status === "connected" ? "active" : "disabled");
-    if (status === "connected") registry.touchActive(userId);
+    if (status === "connected") {
+      registry.touchActive(userId);
+      // Recién vinculado → entra a la fase de INDEXADO (el bot lo avisa y retiene la inferencia
+      // hasta que el historial esté leído). Ver central-bot.ts. Solo si no estaba ya activo/indexado.
+      const u = registry.getUser(userId);
+      if (u?.onboardingState !== "activo") registry.setOnboardingState(userId, "indexando");
+    }
     console.log(dim(`[cp] u${userId} pairing → ${status}${error ? `: ${error}` : ""}`));
     if (status === "connected") setTimeout(() => child.kill("SIGTERM"), BOOTSTRAP_MS).unref();
     else if (!child.killed) child.kill("SIGTERM");

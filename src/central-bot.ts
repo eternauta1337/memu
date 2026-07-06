@@ -70,6 +70,16 @@ const paymentMsg = (phone: string): string => {
 const PAST_DUE_MSG =
   "Tu suscripción a Memu está vencida 😕 Renovala para seguir usándome y te reactivo al toque. Escribime *pagar* y te paso el link.";
 
+// --- Fase de INDEXADO (post-pairing) ---
+// Recién vinculado, el bot lee el historial antes de poder responder bien. Durante esa fase NO
+// infiere: avisa que está leyendo y, cuando el índice está al día, avisa que ya está listo.
+const INDEXING_START =
+  "¡WhatsApp vinculado! 🎉 Ahora estoy leyendo tu historial para armar tu memoria — te aviso apenas termine (puede tardar unos minutos). 📚";
+const INDEXING_WAIT =
+  "Todavía estoy leyendo tu historial 📚 Ya casi — te aviso apenas pueda responderte bien 🙌";
+const INDEXING_DONE =
+  "¡Listo! 🧠 Ya leí tu historial. Preguntame lo que quieras — qué tenés pendiente, qué se dijo en algún grupo, lo que necesites.";
+
 // Modalidad-espejo (igual que antes): audio→audio, texto→texto, salvo pedido explícito.
 const WANT_TEXT = /\b(en|por)\s+(texto|escrito)\b|escrib(i|í|ime|irme|ir)|nada de audio|no.*(audio|voz)/i;
 const WANT_AUDIO = /\b(en|por|con)\s+(audio|voz)\b|nota de voz|mand[aá](me)?\s+(un\s+)?audio|habl[aá]me|contest[aá](me)?\s+(hablando|con audio)/i;
@@ -118,6 +128,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   const sentByMemu = new Set<string>();
   const unknownGreeted = new Set<string>(); // para no spamear al remitente en lista de espera
   const provisioning = new Set<string>(); // teléfonos con un /provision en vuelo (anti-doble-pairing)
+  const indexingReplyAt = new Map<string, number>(); // throttle del aviso "todavía leyendo"
 
   // Envía texto desde el central marcándolo como propio (para no re-procesarlo por el follow).
   const sendBot = (jid: string, text: string): Promise<void> =>
@@ -285,6 +296,15 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
       void onboard(phone, m.chatJid, m.text);
       return;
     }
+    // Fase de INDEXADO: vinculado pero todavía leyendo el historial → no inferir, avisar (throttle).
+    if (user.onboardingState === "indexando") {
+      const last = indexingReplyAt.get(phone) ?? 0;
+      if (Date.now() - last > 25_000) {
+        indexingReplyAt.set(phone, Date.now());
+        void sendBot(m.chatJid, INDEXING_WAIT);
+      }
+      return;
+    }
     registry.touchActive(user.id);
     queue.push({ userId: String(user.id), chatJid: m.chatJid, m });
     void drain();
@@ -320,6 +340,42 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   };
   const reminderTimer = setInterval(() => void fireDueReminders(), 30_000);
   reminderTimer.unref();
+
+  // --- Fase de indexado: avisar "leyendo" al entrar, y "listo" cuando el índice está al día ---
+  const indexNotified = new Set<string>(); // ya mandamos el aviso proactivo "estoy leyendo"
+  const readyStreak = new Map<string, number>(); // ticks consecutivos con el índice al día (anti-race)
+  const advanceOnboarding = (): void => {
+    if (closing) return;
+    for (const user of registry.listUsers()) {
+      if (user.onboardingState !== "indexando" || !user.phone) continue;
+      const uid = String(user.id);
+      const to = `${user.phone}@s.whatsapp.net`;
+      // Aviso proactivo una sola vez, apenas entra a la fase (recién vinculado).
+      if (!indexNotified.has(uid)) {
+        indexNotified.add(uid);
+        void sendBot(to, INDEXING_START);
+      }
+      // Listo = historial importado (count>0) y sin backlog de embeddings, estable 2 ticks seguidos.
+      let ready = false;
+      try {
+        const store = getStore(uid);
+        ready = store.count() > 0 && store.pendingEmbeddings() === 0;
+      } catch {
+        ready = false;
+      }
+      const streak = ready ? (readyStreak.get(uid) ?? 0) + 1 : 0;
+      readyStreak.set(uid, streak);
+      if (streak >= 2) {
+        registry.setOnboardingState(user.id, "activo");
+        readyStreak.delete(uid);
+        indexNotified.delete(uid);
+        void sendBot(to, INDEXING_DONE);
+        console.log(dim(`[bot] u${uid} indexado al día → activo`));
+      }
+    }
+  };
+  const onboardingTimer = setInterval(() => advanceOnboarding(), 20_000);
+  onboardingTimer.unref();
 
   // --- Follow del store central (con backoff, igual que los per-user) ---
   let proc: ChildProcess | null = null;
@@ -359,6 +415,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     if (closing) return;
     closing = true;
     clearInterval(reminderTimer);
+    clearInterval(onboardingTimer);
     stopFollow();
     lidmap.close();
     media.close();

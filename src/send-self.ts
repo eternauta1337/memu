@@ -1,8 +1,8 @@
 // Smoke test del egress al self-chat ("Mensajes contigo mismo"): postea un texto a tu
-// propio número. Valida que Memo puede escribir en el chat donde va a vivir.
+// propio número. Valida que Memu puede escribir en el chat donde va a vivir.
 //
 //   pnpm send-self                 # mensaje default
-//   pnpm send-self hola desde memo # mensaje custom
+//   pnpm send-self hola desde memu # mensaje custom
 
 import "./env.ts";
 import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
@@ -13,7 +13,7 @@ const client = new WacliClient({
   store: wacliStoreDir(DEFAULT_USER_ID),
 });
 
-const msg = process.argv.slice(2).join(" ") || "🧠 Hola, soy Memo. Prueba de self-chat.";
+const msg = process.argv.slice(2).join(" ") || "🧠 Hola, soy Memu. Prueba de self-chat.";
 
 const status = await client.authStatus();
 const own = status.linked_jid ?? status.jid;

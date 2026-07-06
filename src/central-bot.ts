@@ -1,15 +1,15 @@
-// Bot central de Memo: la conexión ÚNICA (número dedicado, ex-Proyecto-interno) por donde la gente conversa
-// con Memo — reemplaza el self-chat. Recibe DMs, identifica al usuario por su TELÉFONO (remitente),
-// corre su agente sobre SU memoria (su memo.db, alimentado por su companion link), y responde
+// Bot central de Memu: la conexión ÚNICA (número dedicado, ex-Proyecto-interno) por donde la gente conversa
+// con Memu — reemplaza el self-chat. Recibe DMs, identifica al usuario por su TELÉFONO (remitente),
+// corre su agente sobre SU memoria (su memu.db, alimentado por su companion link), y responde
 // desde el número central. Los runtimes por-usuario siguen LEYENDO los chats de cada uno (el
 // segundo cerebro); acá vive solo la CHARLA + los reminders/digests salientes.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { askMemo } from "./agent.ts";
+import { askMemu } from "./agent.ts";
 import { generateDigest } from "./digest.ts";
-import { type MemoMessage, normalizeForMemo } from "./ingest.ts";
+import { type MemuMessage, normalizeForMemu } from "./ingest.ts";
 import { openLidMap } from "./lidmap.ts";
 import { openMediaIndex } from "./media.ts";
 import { getRegistry } from "./registry.ts";
@@ -71,9 +71,9 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   if (botJid) botIds.add(resolve(stripDeviceSuffix(botJid)));
   if (status?.phone) botIds.add(`${status.phone}@s.whatsapp.net`);
 
-  const sentByMemo = new Set<string>();
+  const sentByMemu = new Set<string>();
   const unknownGreeted = new Set<string>(); // para no spamear al remitente no habilitado
-  const queue: Array<{ userId: string; chatJid: string; m: MemoMessage }> = [];
+  const queue: Array<{ userId: string; chatJid: string; m: MemuMessage }> = [];
   let working = false;
   let closing = false;
 
@@ -87,7 +87,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   };
 
   const setMsgTextFor = (userId: string, text: string, id: string): void => {
-    // Guarda la transcripción en el memo.db del usuario (queda buscable).
+    // Guarda la transcripción en el memu.db del usuario (queda buscable).
     try {
       getStore(userId).db.prepare("UPDATE messages SET text = ? WHERE id = ?").run(text, id);
     } catch {
@@ -121,7 +121,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
             continue;
           }
           const mode = detectReplyMode(question, inputAudio);
-          const ans = (await askMemo(getStore(userId), question, { voice: mode === "audio" })).trim();
+          const ans = (await askMemu(getStore(userId), question, { voice: mode === "audio" })).trim();
           if (!ans) continue;
 
           if (mode === "audio") {
@@ -129,16 +129,16 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
             try {
               await synthesize(ans, out);
               const r = await client.sendVoice(chatJid, out);
-              if (r.id) sentByMemo.add(r.id);
+              if (r.id) sentByMemu.add(r.id);
             } catch {
               const r = await client.sendText(chatJid, ans);
-              if (r.id) sentByMemo.add(r.id);
+              if (r.id) sentByMemu.add(r.id);
             } finally {
               await unlink(out).catch(() => {});
             }
           } else {
             const r = await client.sendText(chatJid, ans);
-            if (r.id) sentByMemo.add(r.id);
+            if (r.id) sentByMemu.add(r.id);
           }
           console.log(dim(`[bot] u${userId} ← "${question.slice(0, 40)}" → "${ans.slice(0, 40)}"`));
         } catch (e) {
@@ -157,10 +157,10 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
 
   const handleWebhook = (raw: WacliWebhookMessage): void => {
     if (raw.FromMe && raw.SenderJID) botIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
-    const m = normalizeForMemo(raw, botIds, resolve);
+    const m = normalizeForMemu(raw, botIds, resolve);
     // Solo DMs entrantes de personas: nada de grupos, difusiones, self, propios, reacciones, borrados.
     if (isBroadcastJid(m.chatJid) || m.chatKind !== "dm" || m.fromMe || m.revoked || m.reactionEmoji) return;
-    if (sentByMemo.has(m.id)) return;
+    if (sentByMemu.has(m.id)) return;
     const hasContent = Boolean(m.text.trim()) || isAudioType(m.mediaType);
     if (!hasContent) return;
 
@@ -171,7 +171,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
       if (!unknownGreeted.has(phone)) {
         unknownGreeted.add(phone);
         void client
-          .sendText(m.chatJid, "¡Hola! 👋 Todavía no estás habilitado en Memo. Registrate en https://host-web.ejemplo.com y activá tu WhatsApp.")
+          .sendText(m.chatJid, "¡Hola! 👋 Todavía no estás habilitado en Memu. Registrate en https://host-web.ejemplo.com y activá tu WhatsApp.")
           .catch(() => {});
       }
       return;
@@ -197,7 +197,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
           const body = r.action === "digest" ? await generateDigest(store) : `⏰ ${r.text}`;
           try {
             const sent = await client.sendText(to, body);
-            if (sent.id) sentByMemo.add(sent.id);
+            if (sent.id) sentByMemu.add(sent.id);
             store.markFired(r.id, nextFire(r.fireAt, r.recurrence, Date.now()));
             console.log(dim(`[bot] reminder #${r.id} → u${user.id} (${r.action})`));
           } catch (e) {

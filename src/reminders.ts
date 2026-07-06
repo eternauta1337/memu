@@ -1,4 +1,4 @@
-// Reminders: la única pieza de scheduling de Memo, siempre disparada por la persona (nunca
+// Reminders: la única pieza de scheduling de Memu, siempre disparada por la persona (nunca
 // automática). El agente (tool crear_recordatorio) interpreta el pedido en lenguaje natural y llama
 // a `reminderFromFields`; un loop en el ingest (index.ts) dispara los vencidos al self-chat y
 // `nextFire` re-agenda los recurrentes. Acá viven los helpers de fecha/recurrencia y formato.

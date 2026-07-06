@@ -1,11 +1,11 @@
-# Memo
+# Memu
 
 Asistente de WhatsApp — un "segundo cerebro" que vive pineado en el self-chat ("Mensajes
 contigo mismo") del usuario: sabe los pendientes, a quién responder, sugiere respuestas (sin
 responder por vos) y permite conversar al final del día sobre lo que pasó.
 
 Plan y arquitectura completos: **`<doc interno>`**.
-(`nombre-interno` es el nombre interno del proyecto; el producto se llama **Memo**.)
+(`nombre-interno` es el nombre interno del proyecto; el producto se llama **Memu**.)
 
 ## Estado: Fase 0 — validar la ingesta
 
@@ -23,7 +23,7 @@ punto crítico (factibilidad + riesgo de ban) antes de construir nada más.
 ### Runbook
 
 ```bash
-cd ~/memo
+cd ~/memu
 export PATH="/home/usuario/.hermes/node/bin:$PATH"   # pnpm
 pnpm install                                      # instala deps (better-sqlite3, tsx)
 cp .env.example .env                              # ajustá si querés
@@ -36,10 +36,10 @@ pnpm pair
 pnpm ingest
 
 # 3) (otra terminal) Smoke test: postear en tu propio self-chat:
-pnpm send-self "hola desde Memo"
+pnpm send-self "hola desde Memu"
 ```
 
-> ⚠️ El pairing linkea Memo a **tu número personal** de WhatsApp. Es la apuesta del producto:
+> ⚠️ El pairing linkea Memu a **tu número personal** de WhatsApp. Es la apuesta del producto:
 > el riesgo de ban recae sobre ese número. El diseño (lee mucho, escribe solo al self-chat,
 > nunca a terceros) es el patrón de menor riesgo, pero no es cero. Para Fase 0 conviene usar
 > un número de prueba si tenés uno.
@@ -47,8 +47,8 @@ pnpm send-self "hola desde Memo"
 ### Verificar lo ingerido
 
 ```bash
-sqlite3 data/users/self/memo.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kind;"
-sqlite3 data/users/self/memo.db "SELECT ts, chat_kind, push_name, substr(text,1,60) FROM messages ORDER BY ts DESC LIMIT 20;"
+sqlite3 data/users/self/memu.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kind;"
+sqlite3 data/users/self/memu.db "SELECT ts, chat_kind, push_name, substr(text,1,60) FROM messages ORDER BY ts DESC LIMIT 20;"
 ```
 
 ## Fase 1 (en curso)
@@ -56,11 +56,11 @@ sqlite3 data/users/self/memo.db "SELECT ts, chat_kind, push_name, substr(text,1,
 Con la ingesta andando, el cerebro sobre gemma local (host-backend):
 
 ```bash
-pnpm import-history                       # vuelca el histórico de wacli.db a la DB de Memo
+pnpm import-history                       # vuelca el histórico de wacli.db a la DB de Memu
 pnpm ask "¿qué tengo pendiente?"          # pregunta puntual (CLI, sin WhatsApp)
 ```
 
-Y el **loop del self-chat**: cuando corrés `pnpm ingest`, además de ingerir, **Memo responde
+Y el **loop del self-chat**: cuando corrés `pnpm ingest`, además de ingerir, **Memu responde
 en tu self-chat**. Escribí en "Mensajes contigo mismo" (ej. "¿a quién le debo respuesta?") y
 te contesta ahí. (Necesita `.env` con `LLM_*` — ver `.env.example`.)
 
@@ -72,7 +72,7 @@ src/
     wacli-webhook-types.ts   # tipos del payload de wacli + helpers de JID (portado de Proyecto-interno)
     wacli-webhook-server.ts  # server HTTP loopback HMAC que recibe de `wacli sync` (portado)
     wacli-client.ts          # cliente del binario wacli: send/auth (portado)
-  ingest.ts                  # normaliza mensaje → MemoMessage (CONSERVA grupos + self)
+  ingest.ts                  # normaliza mensaje → MemuMessage (CONSERVA grupos + self)
   store.ts                   # SQLite (better-sqlite3, WAL): tabla `messages`
   import-history.ts          # importa el histórico (backfill) desde wacli.db
   llm.ts                     # cliente del LLM local (gemma4-31b vía LiteLLM, OpenAI-compat)

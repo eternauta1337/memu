@@ -9,7 +9,7 @@
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import { embed, toVecBlob } from "./embeddings.ts";
-import type { MemoStore } from "./store.ts";
+import type { MemuStore } from "./store.ts";
 import { wacliStoreDir } from "./users.ts";
 import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
@@ -104,7 +104,7 @@ const SELECT_MSG =
   "SELECT chat_jid, chat_kind, sender_jid, push_name, from_me, ts, text, media_type FROM messages";
 
 /** Búsqueda semántica: embebe la query, trae los mensajes más parecidos por sqlite-vec. */
-async function semanticHits(store: MemoStore, query: string, k: number): Promise<MsgRow[]> {
+async function semanticHits(store: MemuStore, query: string, k: number): Promise<MsgRow[]> {
   if (!store.vecEnabled) return [];
   try {
     const [qv] = await embed([query], "query");
@@ -124,7 +124,7 @@ async function semanticHits(store: MemoStore, query: string, k: number): Promise
 
 /** Búsqueda híbrida sobre todo el WhatsApp: semántica + keyword + nombre de chat. Devuelve
  *  fragmentos formateados (con nombre de chat), listos para meter en el contexto del LLM. */
-export async function searchMessages(store: MemoStore, query: string, names: Map<string, string>): Promise<string> {
+export async function searchMessages(store: MemuStore, query: string, names: Map<string, string>): Promise<string> {
   const seen = new Set<string>();
   const out: MsgRow[] = [];
   const push = (r: MsgRow) => {
@@ -164,7 +164,7 @@ export async function searchMessages(store: MemoStore, query: string, names: Map
 }
 
 /** Chats con actividad reciente (para "¿qué está pasando?"). */
-export function recentChats(store: MemoStore, names: Map<string, string>, limit: number): string {
+export function recentChats(store: MemuStore, names: Map<string, string>, limit: number): string {
   const rows = store.db
     .prepare(
       "SELECT chat_jid, chat_kind, max(ts) AS last, count(*) AS n FROM messages WHERE chat_kind != 'self' GROUP BY chat_jid ORDER BY last DESC LIMIT ?",
@@ -181,7 +181,7 @@ export function recentChats(store: MemoStore, names: Map<string, string>, limit:
 }
 
 /** Últimos mensajes de un chat cuyo nombre matchea `name` (fuzzy). */
-export function readChat(store: MemoStore, names: Map<string, string>, name: string, limit: number): string {
+export function readChat(store: MemuStore, names: Map<string, string>, name: string, limit: number): string {
   const target = norm(name);
   let jid: string | null = null;
   for (const [j, n] of names) {
@@ -200,7 +200,7 @@ export function readChat(store: MemoStore, names: Map<string, string>, name: str
 }
 
 /** Chats donde el último mensaje NO es tuyo (parece esperar respuesta). */
-export function pendingChats(store: MemoStore, names: Map<string, string>, limit: number): string {
+export function pendingChats(store: MemuStore, names: Map<string, string>, limit: number): string {
   const rows = store.db
     .prepare(
       `SELECT chat_jid, chat_kind, sender_jid, push_name, from_me, ts, text, media_type FROM messages

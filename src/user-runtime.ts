@@ -10,25 +10,25 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { askMemo } from "./agent.ts";
+import { askMemu } from "./agent.ts";
 import { readArchivedJids } from "./archived.ts";
 import { generateDigest } from "./digest.ts";
-import { type MemoMessage, normalizeForMemo } from "./ingest.ts";
+import { type MemuMessage, normalizeForMemu } from "./ingest.ts";
 import { embedMissing } from "./indexer.ts";
 import { openLidMap } from "./lidmap.ts";
 import { openMediaIndex } from "./media.ts";
 import { pruneMediaDir } from "./media-cap.ts";
 import { nextFire } from "./reminders.ts";
-import { getStore, type MemoStore } from "./store.ts";
+import { getStore, type MemuStore } from "./store.ts";
 import { transcribe } from "./stt.ts";
 import { synthesize } from "./tts.ts";
 import { wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 import { isBroadcastJid, stripDeviceSuffix, type WacliWebhookMessage } from "./wacli/wacli-webhook-types.ts";
 
-const MEMO_PREFIX = "🤖 "; // marca los mensajes de Memo en el self-chat (todos van a la derecha)
-const MEDIA_CAP_BYTES = Number(process.env.MEMO_MEDIA_CAP_MB ?? 500) * 1024 * 1024; // 0 = sin cap
-const MEDIA_CAP_SWEEP_MS = Number(process.env.MEMO_MEDIA_CAP_SWEEP_MS) || 900_000; // 15 min
+const MEMU_PREFIX = "🤖 "; // marca los mensajes de Memu en el self-chat (todos van a la derecha)
+const MEDIA_CAP_BYTES = Number(process.env.MEMU_MEDIA_CAP_MB ?? 500) * 1024 * 1024; // 0 = sin cap
+const MEDIA_CAP_SWEEP_MS = Number(process.env.MEMU_MEDIA_CAP_SWEEP_MS) || 900_000; // 15 min
 const mb = (b: number): number => Math.round(b / 1024 / 1024);
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -116,10 +116,10 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
   if (ownJid) ownIds.add(resolve(stripDeviceSuffix(ownJid)));
   if (status?.phone) ownIds.add(`${status.phone}@s.whatsapp.net`);
 
-  // Loop del self-chat. Los envíos de Memo (por wacli) NO vuelven por el webhook → sin feedback
+  // Loop del self-chat. Los envíos de Memu (por wacli) NO vuelven por el webhook → sin feedback
   // loop; igual guardamos los ids como cinturón de seguridad.
-  const sentByMemo = new Set<string>();
-  const queue: MemoMessage[] = [];
+  const sentByMemu = new Set<string>();
+  const queue: MemuMessage[] = [];
   let answering = false;
   let closing = false;
 
@@ -128,7 +128,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     answering = true;
     try {
       while (queue.length) {
-        const m = queue.shift() as MemoMessage;
+        const m = queue.shift() as MemuMessage;
         let thinking = true;
         const pulse = () => client.presence(ownJid, "typing").catch(() => {});
         void pulse();
@@ -148,12 +148,12 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
             }
           }
           if (!question) {
-            await client.sendText(ownJid, `${MEMO_PREFIX}no pude entender el audio 🫤`).catch(() => {});
+            await client.sendText(ownJid, `${MEMU_PREFIX}no pude entender el audio 🫤`).catch(() => {});
             continue;
           }
 
           const mode = detectReplyMode(question, inputAudio);
-          const ans = (await askMemo(store, question, { voice: mode === "audio" })).trim();
+          const ans = (await askMemu(store, question, { voice: mode === "audio" })).trim();
           if (!ans) continue;
 
           if (mode === "audio") {
@@ -161,21 +161,21 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
             try {
               await synthesize(ans, out);
               const r = await client.sendVoice(ownJid, out);
-              if (r.id) sentByMemo.add(r.id);
+              if (r.id) sentByMemu.add(r.id);
             } catch (e) {
               console.log(u(dim(`[tts] falló, mando texto: ${(e as Error)?.message ?? e}`)));
-              const r = await client.sendText(ownJid, `${MEMO_PREFIX}${ans}`);
-              if (r.id) sentByMemo.add(r.id);
+              const r = await client.sendText(ownJid, `${MEMU_PREFIX}${ans}`);
+              if (r.id) sentByMemu.add(r.id);
             } finally {
               await unlink(out).catch(() => {});
             }
           } else {
-            const r = await client.sendText(ownJid, `${MEMO_PREFIX}${ans}`);
-            if (r.id) sentByMemo.add(r.id);
+            const r = await client.sendText(ownJid, `${MEMU_PREFIX}${ans}`);
+            if (r.id) sentByMemu.add(r.id);
           }
         } catch (e) {
-          console.log(u(dim(`[memo] error respondiendo: ${(e as Error)?.message ?? e}`)));
-          await client.sendText(ownJid, `${MEMO_PREFIX}uf, algo falló procesando eso 🫤`).catch(() => {});
+          console.log(u(dim(`[memu] error respondiendo: ${(e as Error)?.message ?? e}`)));
+          await client.sendText(ownJid, `${MEMU_PREFIX}uf, algo falló procesando eso 🫤`).catch(() => {});
         } finally {
           thinking = false;
           clearInterval(typingTimer);
@@ -189,7 +189,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
 
   const handleWebhook = (raw: WacliWebhookMessage): void => {
     if (raw.FromMe && raw.SenderJID) ownIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
-    const m = normalizeForMemo(raw, ownIds, resolve);
+    const m = normalizeForMemu(raw, ownIds, resolve);
     if (isBroadcastJid(m.chatJid)) return; // Estados/difusiones no son conversaciones
     if (archivedJids.has(stripDeviceSuffix(m.chatJid))) return; // chat archivado → no se ingiere
     const saved = store.save(m);
@@ -274,7 +274,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
         const body = r.action === "digest" ? await generateDigest(store) : `🤖 ⏰ ${r.text}`;
         try {
           const sent = await client.sendText(ownJid, body);
-          if (sent.id) sentByMemo.add(sent.id);
+          if (sent.id) sentByMemu.add(sent.id);
           store.markFired(r.id, nextFire(r.fireAt, r.recurrence, Date.now()));
           console.log(u(dim(`[reminder] #${r.id} disparado (${r.action})`)));
         } catch (e) {
@@ -329,7 +329,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
   const sttTimer = setInterval(() => void sttSweep(), 90_000);
   sttTimer.unref();
 
-  // Cap de media: poda los blobs más viejos si la carpeta del usuario supera MEMO_MEDIA_CAP_MB.
+  // Cap de media: poda los blobs más viejos si la carpeta del usuario supera MEMU_MEDIA_CAP_MB.
   // Los mensajes quedan; solo se van los archivos (ver media-cap.ts). Corre al arrancar + c/15min.
   const mediaDir = join(storeDir, "media");
   let mediaSweeping = false;

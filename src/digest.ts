@@ -9,7 +9,7 @@ import "./env.ts";
 import { fileURLToPath } from "node:url";
 import { chatNames } from "./agent.ts";
 import { chat, type ChatMessage } from "./llm.ts";
-import { getStore, type MemoStore } from "./store.ts";
+import { getStore, type MemuStore } from "./store.ts";
 import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
@@ -74,7 +74,7 @@ function buildTodayContext(db: import("better-sqlite3").Database, names: Map<str
   return { ctx, n: today.length };
 }
 
-const SYSTEM = `Sos Memo, el asistente de WhatsApp de la persona. Te paso los mensajes de HOY de
+const SYSTEM = `Sos Memu, el asistente de WhatsApp de la persona. Te paso los mensajes de HOY de
 sus chats ("vos" = lo que mandó la persona). Escribí un resumen breve del día en español
 rioplatense, para leer de un vistazo:
 - 2 a 5 bullets con lo importante que pasó (por tema/chat, citando el chat por nombre).
@@ -82,7 +82,7 @@ rioplatense, para leer de un vistazo:
   (el último mensaje de ese chat no es "vos"). Si no hay, decí "Nada urgente".
 Sé conciso y concreto. No inventes: si algo no está en los mensajes, no lo pongas.`;
 
-async function generateBody(store: MemoStore): Promise<string> {
+async function generateBody(store: MemuStore): Promise<string> {
   const { ctx, n } = buildTodayContext(store.db, chatNames(store.userId));
   if (n === 0) return "Hoy estuvo tranquilo — no registré mensajes nuevos en tus chats.";
   const messages: ChatMessage[] = [
@@ -94,7 +94,7 @@ async function generateBody(store: MemoStore): Promise<string> {
 
 /** Digest completo, ya formateado y listo para postear en el self-chat. Reusado por el
  *  scheduler de reminders (`action='digest'`). */
-export async function generateDigest(store: MemoStore): Promise<string> {
+export async function generateDigest(store: MemuStore): Promise<string> {
   return `🤖 📋 *Resumen del día*\n\n${await generateBody(store)}`;
 }
 

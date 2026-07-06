@@ -1,9 +1,9 @@
 {
-  "name": "memo",
+  "name": "memu",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Memo — asistente de WhatsApp (segundo cerebro en el self-chat). Fase 0: ingesta.",
+  "description": "Memu — asistente de WhatsApp (segundo cerebro en el self-chat). Fase 0: ingesta.",
   "scripts": {
     "pair": "tsx src/pair.ts",
     "add-user": "tsx src/add-user.ts",

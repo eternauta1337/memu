@@ -1,4 +1,4 @@
-// Control-plane HTTP — el puente entre la web pública (host-web, en ejemplo.com) y el backend de Memo
+// Control-plane HTTP — el puente entre la web pública (host-web, en ejemplo.com) y el backend de Memu
 // (host-backend, donde viven wacli + registry + stores + GPU). host-web NO puede parear WhatsApp (es
 // serverless-ish y no tiene el store ni corre el follow); llama acá server-side, por Tailscale,
 // con un bearer token. Este proceso aprovisiona usuarios nuevos y los parea por pairing-code
@@ -22,7 +22,7 @@ const HOST = process.env.CONTROL_PLANE_HOST ?? "0.0.0.0";
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 8788);
 const TOKEN = process.env.CONTROL_PLANE_TOKEN ?? "";
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
-const DEVICE_LABEL = process.env.WACLI_DEVICE_LABEL ?? "Memo";
+const DEVICE_LABEL = process.env.WACLI_DEVICE_LABEL ?? "Memu";
 const ENROLL_WAIT_MS = Number(process.env.CP_ENROLL_WAIT_MS ?? 240_000); // espera a que ingrese el código
 const BOOTSTRAP_MS = Number(process.env.CP_BOOTSTRAP_MS ?? 120_000); // margen tras conectar (backfill)
 

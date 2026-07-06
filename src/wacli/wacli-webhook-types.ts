@@ -58,7 +58,7 @@ export function isGroupJid(jid: string): boolean {
 }
 
 /** True para JIDs de broadcast (Estados `status@broadcast` y listas de difusión `…@broadcast`).
- *  No son conversaciones → Memo los ignora (ensucian retrieval y pendientes). */
+ *  No son conversaciones → Memu los ignora (ensucian retrieval y pendientes). */
 export function isBroadcastJid(jid: string): boolean {
   return jid.endsWith("@broadcast");
 }

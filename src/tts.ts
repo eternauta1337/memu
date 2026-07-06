@@ -88,7 +88,7 @@ async function inworldTts(text: string): Promise<Buffer> {
 /** Concatena varios OGG/Opus con el demuxer concat de ffmpeg (re-multiplexa sin recodificar;
  *  pegar bytes de Ogg no es confiable por los serials de stream distintos). */
 function concatOgg(parts: Buffer[], outPath: string): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "memo-tts-"));
+  const dir = mkdtempSync(join(tmpdir(), "memu-tts-"));
   const listPath = join(dir, "list.txt");
   const lines = parts.map((p, i) => {
     const pp = join(dir, `part-${i}.ogg`);

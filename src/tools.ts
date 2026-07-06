@@ -1,10 +1,10 @@
-// Herramientas del agente Memo. Cada una tiene un spec (formato OpenAI, lo que gemma entiende)
+// Herramientas del agente Memu. Cada una tiene un spec (formato OpenAI, lo que gemma entiende)
 // y un ejecutor que corre contra el store. El loop del agente (agent.ts) las ofrece, gemma
 // decide cuáles llamar y con qué argumentos, y encadena pasos hasta responder.
 
 import { fmtWhen, nextFire, reminderFromFields } from "./reminders.ts";
 import { pendingChats, readChat, recentChats, searchMessages } from "./retrieval.ts";
-import type { MemoStore } from "./store.ts";
+import type { MemuStore } from "./store.ts";
 import type { ToolSpec } from "./llm.ts";
 
 export const TOOLS: ToolSpec[] = [
@@ -125,7 +125,7 @@ export const TOOLS: ToolSpec[] = [
 /** Ejecuta una tool por nombre. Devuelve texto (el resultado que se le devuelve al modelo).
  *  Nunca tira: los errores vuelven como texto para que el agente pueda seguir. */
 export async function runTool(
-  store: MemoStore,
+  store: MemuStore,
   names: Map<string, string>,
   name: string,
   argsJson: string,

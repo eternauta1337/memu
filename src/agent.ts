@@ -1,4 +1,4 @@
-// El "cerebro" de Memo, ahora como AGENTE (antes era single-shot). Por cada mensaje de la persona
+// El "cerebro" de Memu, ahora como AGENTE (antes era single-shot). Por cada mensaje de la persona
 // en el self-chat corre un loop: gemma ve las herramientas (tools.ts), decide cuáles llamar,
 // nosotros las ejecutamos y le devolvemos el resultado, y así encadena pasos hasta responder.
 // Además arrastra memoria conversacional (session.ts) y memoria del usuario (hechos en el store).
@@ -6,7 +6,7 @@
 import { type ChatMessage, complete } from "./llm.ts";
 import { chatNames } from "./retrieval.ts";
 import { loadSession, maybeCompact, saveTurn } from "./session.ts";
-import type { MemoStore } from "./store.ts";
+import type { MemuStore } from "./store.ts";
 import { runTool, TOOLS } from "./tools.ts";
 
 export { chatNames };
@@ -71,7 +71,7 @@ y natural, como hablando: 2-4 frases, sin markdown, sin listas ni viñetas, sin 
 Si hay mucho para decir, resumí lo más importante y ofrecé el detalle por texto.`;
 
 function buildSystem(facts: string[], summary: string, voice = false): string {
-  const base = `Sos Memo, un asistente que vive dentro del WhatsApp de la persona (en su chat "Mensajes
+  const base = `Sos Memu, un asistente que vive dentro del WhatsApp de la persona (en su chat "Mensajes
 contigo mismo"). Ayudás a manejar el quilombo de WhatsApp: qué tiene pendiente, a quién responder,
 qué pasó en sus chats y grupos. Hablás español rioplatense, concreto y directo, sin vueltas.
 
@@ -95,7 +95,7 @@ AHORA (hora local): ${nowLabel()}`;
 
 /** Responde un mensaje de la persona corriendo el loop de agente sobre su WhatsApp.
  *  `opts.voice` = la respuesta se va a escuchar (nota de voz) → pedimos algo breve y hablado. */
-export async function askMemo(store: MemoStore, question: string, opts?: { voice?: boolean }): Promise<string> {
+export async function askMemu(store: MemuStore, question: string, opts?: { voice?: boolean }): Promise<string> {
   const names = chatNames(store.userId);
   saveTurn(store, "user", question);
   const { summary, history } = loadSession(store);
@@ -117,7 +117,7 @@ export async function askMemo(store: MemoStore, question: string, opts?: { voice
     messages.push({ role: "assistant", content: content || "", tool_calls: toolCalls });
     for (const tc of toolCalls) {
       const result = await runTool(store, names, tc.function.name, tc.function.arguments);
-      if (process.env.MEMO_DEBUG) {
+      if (process.env.MEMU_DEBUG) {
         console.error(`[tool] ${tc.function.name}(${tc.function.arguments}) → ${result.length}c\n${result.slice(0, 300)}\n`);
       }
       messages.push({ role: "tool", tool_call_id: tc.id, name: tc.function.name, content: result });

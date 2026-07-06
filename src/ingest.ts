@@ -1,6 +1,6 @@
-// Normaliza un mensaje crudo de wacli a la forma que Memo guarda.
+// Normaliza un mensaje crudo de wacli a la forma que Memu guarda.
 //
-// DIFERENCIA CLAVE con el canal de Proyecto-interno (que descarta grupos, ecos y reacciones): Memo
+// DIFERENCIA CLAVE con el canal de Proyecto-interno (que descarta grupos, ecos y reacciones): Memu
 // necesita VER todo. Conservamos grupos, self-chat, mensajes propios (fromMe) y reacciones;
 // solo los clasificamos y marcamos con flags. Filtrar/decidir es responsabilidad de capas
 // posteriores (indexador, agente), no de la ingesta.
@@ -14,7 +14,7 @@ import {
 
 export type ChatKind = "self" | "dm" | "group";
 
-export interface MemoMessage {
+export interface MemuMessage {
   /** Stanza id (único). */
   id: string;
   /** JID del chat (destino de respuesta). */
@@ -54,11 +54,11 @@ export interface MemoMessage {
  * identidad (para tests puros). El self-chat se detecta con `ownIds` (ya canonicalizado).
  * Pura salvo por el `resolve` inyectado → testeable.
  */
-export function normalizeForMemo(
+export function normalizeForMemu(
   msg: WacliWebhookMessage,
   ownIds: ReadonlySet<string>,
   resolve: (jid: string) => string = (j) => j,
-): MemoMessage {
+): MemuMessage {
   const rawChat = stripDeviceSuffix(jidToString(msg.Chat));
   const chatJid = resolve(rawChat);
   const senderJid = resolve(stripDeviceSuffix(msg.SenderJID || rawChat));

@@ -1,18 +1,18 @@
 // Resolución de rutas por-usuario. Cada usuario tiene su directorio `data/users/<userId>/`
-// con TODO lo suyo — `memo.db` (datos de Memo) y `wacli/` (store wacli: auth + fuente + media).
+// con TODO lo suyo — `memu.db` (datos de Memu) y `wacli/` (store wacli: auth + fuente + media).
 // Aislación FÍSICA (ver <doc interno> §Escalado): imposible filtrar datos entre
 // usuarios por un query mal escrito. El userId es el id (int) del registro central (registry.ts),
 // como string para usarlo de componente de ruta.
 //
-// Fase 0 = un solo dueño (user 1) → `MEMO_USER_ID`. Multi-tenant (paso 4b): el userId vendrá del
+// Fase 0 = un solo dueño (user 1) → `MEMU_USER_ID`. Multi-tenant (paso 4b): el userId vendrá del
 // ruteo de ingesta (`/wacli/<userId>`).
 
 import { join } from "node:path";
 
-const USERS_DIR = process.env.MEMO_USERS_DIR ?? "./data/users";
+const USERS_DIR = process.env.MEMU_USERS_DIR ?? "./data/users";
 
 /** userId del dueño en Fase 0 (mono-usuario) = user 1 del registro. */
-export const DEFAULT_USER_ID = process.env.MEMO_USER_ID ?? "1";
+export const DEFAULT_USER_ID = process.env.MEMU_USER_ID ?? "1";
 
 // Guard anti path-traversal: el userId se usa como componente de ruta, así que un valor
 // malicioso ("../otro", "/etc") podría cruzar a los datos de otro usuario. Exigimos un id
@@ -29,9 +29,9 @@ export function userDir(userId: string): string {
   return join(USERS_DIR, userId);
 }
 
-/** Ruta del `memo.db` de un usuario. */
-export function memoDbPath(userId: string): string {
-  return join(userDir(userId), "memo.db");
+/** Ruta del `memu.db` de un usuario. */
+export function memuDbPath(userId: string): string {
+  return join(userDir(userId), "memu.db");
 }
 
 /** Directorio del store wacli de un usuario: `data/users/<userId>/wacli/` (auth + fuente + media). */

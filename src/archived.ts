@@ -2,14 +2,14 @@
 // — el usuario los archivó justamente para sacarlos de su vista, así que los dejamos afuera del
 // segundo cerebro. Leemos el flag `archived` de la tabla `chats` de wacli.db (read-only). Se
 // refresca cada tanto porque el usuario puede archivar/desarchivar en vivo. Para incluirlos igual,
-// MEMO_INGEST_ARCHIVED=1.
+// MEMU_INGEST_ARCHIVED=1.
 
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import { stripDeviceSuffix } from "./wacli/wacli-webhook-types.ts";
 
 /** true si se pidió NO filtrar archivados (ingerir todo). */
-export const ingestArchived = process.env.MEMO_INGEST_ARCHIVED === "1";
+export const ingestArchived = process.env.MEMU_INGEST_ARCHIVED === "1";
 
 /** Set de JIDs (stripped) de los chats archivados en el store wacli dado. Vacío si no filtramos. */
 export function readArchivedJids(storeDir: string): Set<string> {

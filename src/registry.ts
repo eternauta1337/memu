@@ -1,6 +1,6 @@
 // Registro central de usuarios (multi-tenant). Un solo `data/registry.db` con la tabla `users`:
 // id (PK), phone, status, timestamps. Es lo ÚNICO central — los DATOS de cada usuario viven
-// aislados en `data/users/<id>/` (memo.db + wacli/, ver users.ts). El pool de ingest (paso 4c)
+// aislados en `data/users/<id>/` (memu.db + wacli/, ver users.ts). El pool de ingest (paso 4c)
 // prioriza por `last_active_at`. Onboarding: `pnpm add-user --phone` (paso 4c); signup web +
 // Stripe queda para Fase 3.
 
@@ -8,7 +8,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-const REGISTRY_DB = process.env.MEMO_REGISTRY_DB ?? "./data/registry.db";
+const REGISTRY_DB = process.env.MEMU_REGISTRY_DB ?? "./data/registry.db";
 
 // 'pending' = creado, pairing en curso (todavía no lo sirve el pool); 'active' = pareado y en
 // servicio; 'paused'/'disabled' = fuera de servicio.

@@ -5,7 +5,7 @@
 // saltamos por-fila, así el índice full (oldest→newest) y el sweep (newest→oldest) conviven.
 
 import { embed, toVecBlob } from "./embeddings.ts";
-import type { MemoStore } from "./store.ts";
+import type { MemuStore } from "./store.ts";
 
 const BATCH = 64;
 
@@ -18,7 +18,7 @@ export interface EmbedOpts {
   log?: (done: number, total: number) => void;
 }
 
-export async function embedMissing(store: MemoStore, opts?: EmbedOpts): Promise<number> {
+export async function embedMissing(store: MemuStore, opts?: EmbedOpts): Promise<number> {
   if (!store.vecEnabled) return 0;
   const order = opts?.order === "desc" ? "DESC" : "ASC";
   const limit = opts?.limit ? `LIMIT ${Math.floor(opts.limit)}` : "";

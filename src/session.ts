@@ -1,9 +1,9 @@
-// Memoria conversacional del self-chat + compactación. Memo mantiene UNA sesión (single-tenant
+// Memoria conversacional del self-chat + compactación. Memu mantiene UNA sesión (single-tenant
 // por ahora): el diálogo con la persona. Los turnos se persisten en `conversation`; cuando crecen,
 // los más viejos se resumen en un `summary` y se avanza un `cutoff`, así el prompt no explota.
 
 import { chat, type ChatMessage } from "./llm.ts";
-import type { MemoStore, Turn } from "./store.ts";
+import type { MemuStore, Turn } from "./store.ts";
 
 const SUMMARY_KEY = "summary";
 const CUTOFF_KEY = "cutoff";
@@ -17,7 +17,7 @@ export interface SessionCtx {
 }
 
 /** Carga el estado de sesión: resumen + turnos recientes (posteriores al cutoff). */
-export function loadSession(store: MemoStore): SessionCtx {
+export function loadSession(store: MemuStore): SessionCtx {
   const summary = store.getState(SUMMARY_KEY) ?? "";
   const cutoff = Number(store.getState(CUTOFF_KEY) ?? 0);
   const history: ChatMessage[] = store.turnsAfter(cutoff).map((t: Turn) => ({
@@ -28,16 +28,16 @@ export function loadSession(store: MemoStore): SessionCtx {
 }
 
 /** Persiste un turno del diálogo. */
-export function saveTurn(store: MemoStore, role: "user" | "assistant", content: string): void {
+export function saveTurn(store: MemuStore, role: "user" | "assistant", content: string): void {
   if (content.trim()) store.appendTurn(role, content);
 }
 
 function renderTurns(turns: Turn[]): string {
-  return turns.map((t) => `${t.role === "user" ? "Persona" : "Memo"}: ${t.content}`).join("\n");
+  return turns.map((t) => `${t.role === "user" ? "Persona" : "Memu"}: ${t.content}`).join("\n");
 }
 
 /** Si el diálogo creció, resume los turnos más viejos en el summary y avanza el cutoff. */
-export async function maybeCompact(store: MemoStore): Promise<void> {
+export async function maybeCompact(store: MemuStore): Promise<void> {
   const cutoff = Number(store.getState(CUTOFF_KEY) ?? 0);
   const turns = store.turnsAfter(cutoff);
   if (turns.length <= MAX) return;
@@ -50,7 +50,7 @@ export async function maybeCompact(store: MemoStore): Promise<void> {
     {
       role: "system",
       content:
-        "Resumís una conversación entre una persona y su asistente de WhatsApp (Memo). Integrá el resumen previo con los nuevos turnos en un único resumen breve, en español rioplatense, que preserve lo importante: pedidos abiertos, preferencias, hilos en curso y datos que la persona dio. No inventes.",
+        "Resumís una conversación entre una persona y su asistente de WhatsApp (Memu). Integrá el resumen previo con los nuevos turnos en un único resumen breve, en español rioplatense, que preserve lo importante: pedidos abiertos, preferencias, hilos en curso y datos que la persona dio. No inventes.",
     },
     {
       role: "user",

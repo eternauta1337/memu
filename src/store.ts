@@ -1,4 +1,4 @@
-// Store SQLite central de Memo (patrón tomado de @proyecto-interno/store: better-sqlite3, WAL, SQL a
+// Store SQLite central de Memu (patrón tomado de @proyecto-interno/store: better-sqlite3, WAL, SQL a
 // mano, sin ORM). Fase 0: solo la tabla `messages` (ingesta cruda). Multi-tenant vendrá con
 // una columna `user_id` cuando lleguemos a la Fase 3.
 
@@ -6,8 +6,8 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import * as sqliteVec from "sqlite-vec";
-import type { MemoMessage } from "./ingest.ts";
-import { memoDbPath } from "./users.ts";
+import type { MemuMessage } from "./ingest.ts";
+import { memuDbPath } from "./users.ts";
 
 const VEC_DIM = 768; // gte-multilingual-base (ver embeddings.ts EMBED_DIM). Mantener en sync.
 
@@ -33,14 +33,14 @@ export interface NewReminder {
   recurrence?: Recurrence;
 }
 
-export interface MemoStore {
+export interface MemuStore {
   db: Database.Database;
   /** userId dueño de este store (para resolver rutas per-usuario, ej. el wacli store). */
   userId: string;
   /** true si sqlite-vec cargó y la tabla `vec_messages` existe (búsqueda semántica disponible). */
   vecEnabled: boolean;
   /** Inserta un mensaje. Devuelve true si era nuevo (false si ya estaba: dedup por id). */
-  save(m: MemoMessage): boolean;
+  save(m: MemuMessage): boolean;
   /** Total de mensajes guardados. */
   count(): number;
   /** Crea un reminder. Devuelve el id asignado. */
@@ -61,7 +61,7 @@ export interface MemoStore {
 
   /** Agrega un hecho a la memoria del usuario. Devuelve su id. */
   addFact(text: string): number;
-  /** Todos los hechos que la persona le enseñó a Memo, del más viejo al más nuevo. */
+  /** Todos los hechos que la persona le enseñó a Memu, del más viejo al más nuevo. */
   listFacts(): Fact[];
   /** Borra un hecho. Devuelve true si existía. */
   deleteFact(id: number): boolean;
@@ -85,7 +85,7 @@ export interface Fact {
   createdAt: string;
 }
 
-export function openStore(dbPath: string, userId = ""): MemoStore {
+export function openStore(dbPath: string, userId = ""): MemuStore {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
@@ -122,7 +122,7 @@ export function openStore(dbPath: string, userId = ""): MemoStore {
     );
     CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
 
-    -- Diálogo del self-chat con Memo (persistimos ambos lados: los envíos de Memo NO vuelven
+    -- Diálogo del self-chat con Memu (persistimos ambos lados: los envíos de Memu NO vuelven
     -- por el webhook, así que hay que guardarlos acá para tener memoria conversacional).
     CREATE TABLE IF NOT EXISTS conversation (
       id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,7 +131,7 @@ export function openStore(dbPath: string, userId = ""): MemoStore {
       ts      TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- Hechos que la persona le enseña a Memo ("mi mamá es Marta", "el grupo X es mi familia").
+    -- Hechos que la persona le enseña a Memu ("mi mamá es Marta", "el grupo X es mi familia").
     CREATE TABLE IF NOT EXISTS user_memory (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       text       TEXT NOT NULL,
@@ -253,7 +253,7 @@ export function openStore(dbPath: string, userId = ""): MemoStore {
     setState(key: string, value: string): void {
       setSt.run(key, value);
     },
-    save(m: MemoMessage): boolean {
+    save(m: MemuMessage): boolean {
       // better-sqlite3 no acepta undefined/boolean como binding → null / 0|1.
       const r = insert.run({
         id: m.id,
@@ -279,16 +279,16 @@ export function openStore(dbPath: string, userId = ""): MemoStore {
   };
 }
 
-// Registro de stores abiertos, uno por usuario. `getStore` abre el memo.db del usuario la
+// Registro de stores abiertos, uno por usuario. `getStore` abre el memu.db del usuario la
 // primera vez y lo cachea (una conexión por usuario, reusada entre mensajes). Es el punto de
 // entrada multi-tenant: cada usuario ve SOLO su DB (aislación física, ver users.ts).
-const stores = new Map<string, MemoStore>();
+const stores = new Map<string, MemuStore>();
 
 /** Store del usuario `userId`, abriéndolo (y cacheándolo) la primera vez. */
-export function getStore(userId: string): MemoStore {
+export function getStore(userId: string): MemuStore {
   let s = stores.get(userId);
   if (!s) {
-    s = openStore(memoDbPath(userId), userId);
+    s = openStore(memuDbPath(userId), userId);
     stores.set(userId, s);
   }
   return s;

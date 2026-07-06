@@ -1,5 +1,5 @@
 // Acceso a los archivos de media que wacli descarga (`--download-media`). Los bytes viven en
-// disco (`<store>/media/…`) y la ruta está en `wacli.db.messages.local_path`. Memo no guarda la
+// disco (`<store>/media/…`) y la ruta está en `wacli.db.messages.local_path`. Memu no guarda la
 // ruta en su propia DB (solo el tipo/mime), así que la resolvemos acá por id de mensaje.
 // Read-only: convive con el `sync --follow`.
 

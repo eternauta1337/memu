@@ -15,8 +15,8 @@ import { createUserRuntime, type UserRuntime } from "./user-runtime.ts";
 import { WacliWebhookServer } from "./wacli/wacli-webhook-server.ts";
 
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
-const POOL_SIZE = Number(process.env.MEMO_FOLLOW_POOL_SIZE) || 50; // máx follows concurrentes
-const STAGGER_MS = Number(process.env.MEMO_FOLLOW_STAGGER_MS) || 3000; // delay entre arranques
+const POOL_SIZE = Number(process.env.MEMU_FOLLOW_POOL_SIZE) || 50; // máx follows concurrentes
+const STAGGER_MS = Number(process.env.MEMU_FOLLOW_STAGGER_MS) || 3000; // delay entre arranques
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 async function main(): Promise<void> {
@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   });
   await webhook.listen();
 
-  // Bot central: la conexión ÚNICA (número dedicado) por donde la gente conversa con Memo —
+  // Bot central: la conexión ÚNICA (número dedicado) por donde la gente conversa con Memu —
   // recibe DMs, identifica al usuario por su teléfono y corre su agente (ver central-bot.ts).
   centralBot = await createCentralBot({
     webhookUrl: webhook.urlFor("central"),
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
     log: (m) => console.log(dim(`[pool] ${m}`)),
   });
 
-  // Auto-import del histórico (wacli.db → memo.db) la primera vez. RETRIABLE: si el memo.db sigue
+  // Auto-import del histórico (wacli.db → memu.db) la primera vez. RETRIABLE: si el memu.db sigue
   // vacío (el backfill del pairing todavía no pobló wacli.db), se reintenta en el próximo tick —
   // así no se pierde por un race entre el hot-add y el backfill. Al importar algo, deja de correr.
   const importing = new Set<string>();

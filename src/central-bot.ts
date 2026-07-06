@@ -27,13 +27,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const isAudioType = (t?: string): boolean => t === "audio" || t === "ptt";
 const phoneOf = (jid: string): string => stripDeviceSuffix(jid).split("@")[0]!.replace(/\D/g, "");
 
-// Gate temporal de Fase A (sin Stripe): allowlist por teléfono (dígitos, coma-separados). Vacío =
-// abierto a todos. En Fase B lo reemplaza el estado de suscripción. Mismo criterio que la web.
+// Allowlist de CORTESÍA (opt-in): teléfonos que bypassean el pago (dígitos, coma-separados). VACÍA =
+// nadie es cortesía → todos pasan por la suscripción (el gate real es Stripe). Es puramente aditiva.
 const ALLOWLIST = (process.env.MEMU_ALLOWLIST ?? "")
   .split(",")
   .map((s) => s.replace(/\D/g, ""))
   .filter(Boolean);
-const phoneAllowed = (phone: string): boolean => ALLOWLIST.length === 0 || ALLOWLIST.includes(phone);
+const phoneAllowed = (phone: string): boolean => ALLOWLIST.includes(phone);
 
 // Onboarding in-chat. Ver <doc interno>.
 const pairingMsg = (code: string): string =>

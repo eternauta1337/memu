@@ -2,6 +2,8 @@
 // y un ejecutor que corre contra el store. El loop del agente (agent.ts) las ofrece, gemma
 // decide cuáles llamar y con qué argumentos, y encadena pasos hasta responder.
 
+import { portalUrl } from "./billing.ts";
+import { getRegistry } from "./registry.ts";
 import { fmtWhen, nextFire, reminderFromFields } from "./reminders.ts";
 import { pendingChats, readChat, recentChats, searchMessages } from "./retrieval.ts";
 import type { MemuStore } from "./store.ts";
@@ -120,6 +122,15 @@ export const TOOLS: ToolSpec[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "gestionar_suscripcion",
+      description:
+        "Devuelve un link al portal de Stripe donde la persona gestiona su suscripción: cambiar la tarjeta, ver facturas, o CANCELAR / darse de baja. Usalo cuando pida gestionar el pago/suscripción, cambiar la tarjeta, ver sus facturas, cancelar o darse de baja.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
 ];
 
 /** Ejecuta una tool por nombre. Devuelve texto (el resultado que se le devuelve al modelo).
@@ -178,6 +189,15 @@ export async function runTool(
         const id = int("id", 0);
         if (!id) return "Error: falta el id.";
         return store.cancelReminder(id) ? `Recordatorio #${id} cancelado.` : `No hay recordatorio pendiente #${id}.`;
+      }
+      case "gestionar_suscripcion": {
+        const u = getRegistry().getUser(Number(store.userId));
+        if (!u?.stripeCustomerId) {
+          return "La persona no tiene una suscripción de Stripe asociada (puede ser cortesía). No hay portal para mostrarle; explicáselo con tacto.";
+        }
+        const url = await portalUrl(u.stripeCustomerId);
+        if (!url) return "No se pudo generar el link del portal ahora. Pedile que reintente en un minuto.";
+        return `LINK DEL PORTAL (pegalo EXACTO, sin acortar ni modificar): ${url}\nAhí puede cambiar la tarjeta, ver facturas o cancelar. El link vence en un rato.`;
       }
       default:
         return `Error: herramienta desconocida "${name}".`;

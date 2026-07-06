@@ -8,6 +8,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { askMemu } from "./agent.ts";
+import { portalUrl } from "./billing.ts";
 import { cpProvision, cpStatus } from "./cp-client.ts";
 import { generateDigest } from "./digest.ts";
 import { type MemuMessage, normalizeForMemu } from "./ingest.ts";
@@ -67,35 +68,11 @@ const paymentMsg = (phone: string): string => {
   lines.push("", "Apenas confirmes, te paso el código para vincular tu WhatsApp. 📲");
   return lines.join("\n");
 };
+// Aviso de suscripción vencida (past_due): el link del portal se appendea aparte (para arreglar la
+// tarjeta). Para usuarios activos que quieren gestionar/cancelar, eso lo maneja el AGENTE con la tool
+// `gestionar_suscripcion` (tools.ts) — sin palabras clave. Ver <doc interno>.
 const PAST_DUE_MSG =
-  "Tu suscripción a Memu está vencida 😕 Puede ser un problema con la tarjeta. Escribime *gestionar* y te paso el link para actualizarla o revisar tu plan.";
-
-// --- Customer Portal (autogestión de la suscripción) ---
-// La Stripe key vive solo en la box (memu-web), así que le pedimos a ella una sesión del portal y le
-// mandamos la URL al usuario. Gate con el mismo token compartido (CONTROL_PLANE_TOKEN). Ver
-// memu-web/app/api/stripe/portal/route.ts.
-const WEB_BASE = (process.env.MEMU_WEB_URL ?? "https://memu.chat").replace(/\/$/, "");
-const CP_TOKEN = process.env.CONTROL_PLANE_TOKEN ?? "";
-// Palabras que piden gestionar/cancelar la suscripción o cambiar la tarjeta (≠ WANT_PAY, que es dar
-// de alta). Solo dispara el portal si el usuario YA es cliente de Stripe (tiene customerId).
-const WANT_MANAGE =
-  /\b(cancelar|anular|desuscribir\w*|dar(me)?\s+de\s+baja)\b|\b(cambiar|actualizar)\b[^.]*\btarjeta\b|\bgestionar\b[^.]*\b(suscrip\w*|pago|plan|tarjeta|factura\w*)\b|\b(portal|facturaci[oó]n)\b/i;
-const PORTAL_MSG = (url: string): string =>
-  `Acá gestionás tu suscripción (cambiar tarjeta, ver facturas o cancelar) 👉 ${url}\n\n` +
-  "El link es de un solo uso y vence en un rato; si expira, escribime *gestionar* de nuevo.";
-async function portalUrl(customerId: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${WEB_BASE}/api/stripe/portal`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${CP_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ customerId }),
-    });
-    const json = (await res.json().catch(() => ({}))) as { url?: string };
-    return res.ok && typeof json.url === "string" ? json.url : null;
-  } catch {
-    return null;
-  }
-}
+  "Tu suscripción a Memu está vencida 😕 Suele ser un problema con la tarjeta. La actualizás o revisás tu plan acá:";
 
 // --- Fase de INDEXADO (post-pairing) ---
 // Recién vinculado, el bot lee el historial antes de poder responder bien. Durante esa fase NO
@@ -153,7 +130,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   if (status?.phone) botIds.add(`${status.phone}@s.whatsapp.net`);
 
   const sentByMemu = new Set<string>();
-  const unknownGreeted = new Set<string>(); // para no spamear al remitente en lista de espera
+  const paymentPromptAt = new Map<string, number>(); // último reenvío del link de pago/portal (throttle)
   const provisioning = new Set<string>(); // teléfonos con un /provision en vuelo (anti-doble-pairing)
   const indexingReplyAt = new Map<string, number>(); // throttle del aviso "todavía leyendo"
 
@@ -249,21 +226,23 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   // está activo+elegible todavía. Ramas: (1) sin pago ni cortesía → link de pago (o aviso de vencido);
   // (2) pago/cortesía OK pero sin vincular → dispara el pairing (idempotente) y manda el código. La
   // inferencia se habilita recién cuando el pairing conecta (status → 'active'). Ver onboarding-y-stripe.md.
-  const WANT_PAY = /\b(pagar|pago|suscri\w*|plan(es)?|precio|comprar)\b/i;
-  const onboard = async (phone: string, chatJid: string, text: string): Promise<void> => {
+  const PROMPT_THROTTLE_MS = 60_000; // no reenviar el mismo prompt más seguido que esto
+  const onboard = async (phone: string, chatJid: string): Promise<void> => {
     const user = registry.getUserByPhone(phone);
     const paid = phoneAllowed(phone) || subActive(user);
 
     if (!paid) {
-      // Suscripción vencida/cancelada → aviso de renovación (salvo que pidan el link explícito).
-      const lapsed = user?.subscriptionStatus === "past_due" || user?.subscriptionStatus === "canceled";
-      if (WANT_PAY.test(text)) {
-        await sendBot(chatJid, paymentMsg(phone)); // re-mandar el link a pedido
-      } else if (lapsed) {
-        await sendBot(chatJid, PAST_DUE_MSG);
-      } else if (!unknownGreeted.has(phone)) {
-        unknownGreeted.add(phone);
-        await sendBot(chatJid, paymentMsg(phone)); // saludo + link, una sola vez
+      // Sin keyword: el link se (re)manda solo cuando el usuario escribe y no está suscripto, pero
+      // throttleado (evita spam si manda varios mensajes seguidos). past_due = la sub existe pero
+      // falla el cobro → portal para arreglar la tarjeta; nuevo/cancelado → link de pago (alta).
+      const last = paymentPromptAt.get(phone) ?? 0;
+      if (Date.now() - last < PROMPT_THROTTLE_MS) return;
+      paymentPromptAt.set(phone, Date.now());
+      if (user?.subscriptionStatus === "past_due" && user.stripeCustomerId) {
+        const url = await portalUrl(user.stripeCustomerId);
+        await sendBot(chatJid, url ? `${PAST_DUE_MSG}\n👉 ${url}` : PAST_DUE_MSG);
+      } else {
+        await sendBot(chatJid, paymentMsg(phone));
       }
       return;
     }
@@ -284,22 +263,6 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
       await sendBot(chatJid, "Uf, no pude arrancar la vinculación 🫤 Probá de nuevo en un minuto.");
     } finally {
       provisioning.delete(phone);
-    }
-  };
-
-  // Autogestión: manda el link del Customer Portal (o avisa si no se pudo). Solo tiene sentido para
-  // usuarios que ya son clientes de Stripe (tienen customerId). Corre antes del gate de inferencia,
-  // así "cancelar mi suscripción" no cae en el agente.
-  const managing = new Set<string>(); // teléfonos con un pedido de portal en vuelo (anti-doble)
-  const manage = async (phone: string, chatJid: string, customerId: string): Promise<void> => {
-    if (managing.has(phone)) return;
-    managing.add(phone);
-    try {
-      const url = await portalUrl(customerId);
-      await sendBot(chatJid, url ? PORTAL_MSG(url) : "No pude abrir el portal ahora 🫤 Probá de nuevo en un minuto.");
-      console.log(dim(`[bot] portal ${phone} → ${url ? "ok" : "falló"}`));
-    } finally {
-      managing.delete(phone);
     }
   };
 
@@ -332,18 +295,13 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     }
 
     const user = registry.getUserByPhone(phone);
-    // Autogestión de la suscripción (Customer Portal): si el usuario ya es cliente de Stripe y pide
-    // gestionar/cancelar/cambiar tarjeta, le mandamos el link del portal. Independiente del status
-    // (sirve para un activo que quiere cancelar y para un vencido que quiere arreglar la tarjeta).
-    if (user?.stripeCustomerId && WANT_MANAGE.test(m.text)) {
-      void manage(phone, m.chatJid, user.stripeCustomerId);
-      return;
-    }
     // Gate de inferencia: solo hablan con el agente los usuarios ACTIVOS (pairing conectado) Y
     // elegibles (suscripción vigente o cortesía). El resto entra al onboarding in-chat (pago →
     // pairing → código). Una suscripción vencida corta la inferencia aunque siga vinculado. Ver onboard().
+    // La autogestión (cambiar tarjeta / cancelar) de un usuario activo la maneja el agente con la tool
+    // gestionar_suscripcion — no hay keyword acá.
     if (!user || user.status !== "active" || !isEligible(phone, user)) {
-      void onboard(phone, m.chatJid, m.text);
+      void onboard(phone, m.chatJid);
       return;
     }
     // Fase de INDEXADO: vinculado pero todavía leyendo el historial → no inferir, avisar (throttle).

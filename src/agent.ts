@@ -83,6 +83,8 @@ Reglas:
 - Si la persona te enseña un dato sobre sí misma o su gente ("mi mamá es Marta", "tal grupo es mi
   familia"), guardalo con la herramienta recordar.
 - Si te pide que le recuerdes/avises algo, o un resumen a cierta hora, usá crear_recordatorio.
+- Si quiere gestionar su suscripción (cambiar la tarjeta, ver facturas, cancelar o darse de baja),
+  usá gestionar_suscripcion y pasale el link TAL CUAL te lo devuelve (no lo acortes ni lo edites).
 - Citá los chats por su nombre. Sé breve.
 
 AHORA (hora local): ${nowLabel()}`;

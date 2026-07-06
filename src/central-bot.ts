@@ -8,6 +8,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { askMemu } from "./agent.ts";
+import { cpProvision, cpStatus } from "./cp-client.ts";
 import { generateDigest } from "./digest.ts";
 import { type MemuMessage, normalizeForMemu } from "./ingest.ts";
 import { openLidMap } from "./lidmap.ts";
@@ -25,6 +26,49 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const isAudioType = (t?: string): boolean => t === "audio" || t === "ptt";
 const phoneOf = (jid: string): string => stripDeviceSuffix(jid).split("@")[0]!.replace(/\D/g, "");
+
+// Gate temporal de Fase A (sin Stripe): allowlist por teléfono (dígitos, coma-separados). Vacío =
+// abierto a todos. En Fase B lo reemplaza el estado de suscripción. Mismo criterio que la web.
+const ALLOWLIST = (process.env.MEMU_ALLOWLIST ?? "")
+  .split(",")
+  .map((s) => s.replace(/\D/g, ""))
+  .filter(Boolean);
+const phoneAllowed = (phone: string): boolean => ALLOWLIST.length === 0 || ALLOWLIST.includes(phone);
+
+// Onboarding in-chat. Ver <doc interno>.
+const pairingMsg = (code: string): string =>
+  "¡Listo el pago! 🎉 Ahora conectá tu WhatsApp:\n\n" +
+  "1) Abrí WhatsApp → *Ajustes → Dispositivos vinculados*\n" +
+  '2) Tocá *"Vincular un dispositivo"* → *"Vincular con número de teléfono"*\n' +
+  `3) Ingresá este código: *${code}*\n\n` +
+  "Cuando lo vincules, leo tu historial unos minutos y ya te respondo. 📚";
+
+// --- Suscripción (Fase B, Stripe) ---
+// El acceso lo dan los estados 'trialing' | 'active'. La allowlist queda como lista de CORTESÍA
+// (bypass de pago para el dueño + testers). eligible = comp (allowlist) o suscripción vigente.
+const subActive = (u: { subscriptionStatus: string | null } | null): boolean =>
+  u?.subscriptionStatus === "trialing" || u?.subscriptionStatus === "active";
+const isEligible = (phone: string, u: { subscriptionStatus: string | null } | null): boolean =>
+  phoneAllowed(phone) || subActive(u);
+
+const LINK_MONTHLY = process.env.STRIPE_LINK_MONTHLY ?? "";
+const LINK_YEARLY = process.env.STRIPE_LINK_YEARLY ?? "";
+// Payment Links de Stripe aceptan ?client_reference_id= — así el webhook sabe qué teléfono pagó.
+const withRef = (link: string, phone: string): string =>
+  link ? `${link}${link.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(phone)}` : "";
+const paymentMsg = (phone: string): string => {
+  const lines = [
+    "¡Bienvenido/a a Memu! 🧠 Soy tu segundo cerebro adentro de WhatsApp.",
+    "",
+    "Para arrancar, elegí tu plan (7 días gratis — no se te cobra hasta el día 8):",
+  ];
+  if (LINK_MONTHLY) lines.push(`• *Mensual* (USD 9): ${withRef(LINK_MONTHLY, phone)}`);
+  if (LINK_YEARLY) lines.push(`• *Anual* (USD 90, 2 meses gratis): ${withRef(LINK_YEARLY, phone)}`);
+  lines.push("", "Apenas confirmes, te paso el código para vincular tu WhatsApp. 📲");
+  return lines.join("\n");
+};
+const PAST_DUE_MSG =
+  "Tu suscripción a Memu está vencida 😕 Renovala para seguir usándome y te reactivo al toque. Escribime *pagar* y te paso el link.";
 
 // Modalidad-espejo (igual que antes): audio→audio, texto→texto, salvo pedido explícito.
 const WANT_TEXT = /\b(en|por)\s+(texto|escrito)\b|escrib(i|í|ime|irme|ir)|nada de audio|no.*(audio|voz)/i;
@@ -72,7 +116,15 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   if (status?.phone) botIds.add(`${status.phone}@s.whatsapp.net`);
 
   const sentByMemu = new Set<string>();
-  const unknownGreeted = new Set<string>(); // para no spamear al remitente no habilitado
+  const unknownGreeted = new Set<string>(); // para no spamear al remitente en lista de espera
+  const provisioning = new Set<string>(); // teléfonos con un /provision en vuelo (anti-doble-pairing)
+
+  // Envía texto desde el central marcándolo como propio (para no re-procesarlo por el follow).
+  const sendBot = (jid: string, text: string): Promise<void> =>
+    client
+      .sendText(jid, text)
+      .then((r) => { if (r.id) sentByMemu.add(r.id); })
+      .catch(() => {});
   const queue: Array<{ userId: string; chatJid: string; m: MemuMessage }> = [];
   let working = false;
   let closing = false;
@@ -155,6 +207,48 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     }
   };
 
+  // Onboarding in-chat (Fase B): máquina de estados derivada de (suscripción, status). El usuario NO
+  // está activo+elegible todavía. Ramas: (1) sin pago ni cortesía → link de pago (o aviso de vencido);
+  // (2) pago/cortesía OK pero sin vincular → dispara el pairing (idempotente) y manda el código. La
+  // inferencia se habilita recién cuando el pairing conecta (status → 'active'). Ver onboarding-y-stripe.md.
+  const WANT_PAY = /\b(pagar|pago|suscri\w*|plan(es)?|precio|comprar)\b/i;
+  const onboard = async (phone: string, chatJid: string, text: string): Promise<void> => {
+    const user = registry.getUserByPhone(phone);
+    const paid = phoneAllowed(phone) || subActive(user);
+
+    if (!paid) {
+      // Suscripción vencida/cancelada → aviso de renovación (salvo que pidan el link explícito).
+      const lapsed = user?.subscriptionStatus === "past_due" || user?.subscriptionStatus === "canceled";
+      if (WANT_PAY.test(text)) {
+        await sendBot(chatJid, paymentMsg(phone)); // re-mandar el link a pedido
+      } else if (lapsed) {
+        await sendBot(chatJid, PAST_DUE_MSG);
+      } else if (!unknownGreeted.has(phone)) {
+        unknownGreeted.add(phone);
+        await sendBot(chatJid, paymentMsg(phone)); // saludo + link, una sola vez
+      }
+      return;
+    }
+
+    // Pagó (o es cortesía) pero no está vinculado → asegurar el pairing y mandar el código. cpProvision
+    // es idempotente (no re-spawnea si ya hay un job en curso), así que sirve tanto para el primer
+    // disparo como para reenviar el código en mensajes siguientes.
+    if (provisioning.has(phone)) return;
+    provisioning.add(phone);
+    try {
+      const res = await cpProvision(phone);
+      if (res.code) await sendBot(chatJid, pairingMsg(res.code));
+      else if (res.status === "connected") await sendBot(chatJid, "¡Ya estás vinculado! Escribime lo que quieras 😄");
+      else await sendBot(chatJid, "Estoy generando tu código de vinculación 🙏 Escribime de nuevo en un ratito.");
+      console.log(dim(`[bot] onboard ${phone} → ${res.status}${res.code ? " (código)" : ""}`));
+    } catch (e) {
+      console.log(dim(`[bot] onboard ${phone} falló: ${(e as Error)?.message ?? e}`));
+      await sendBot(chatJid, "Uf, no pude arrancar la vinculación 🫤 Probá de nuevo en un minuto.");
+    } finally {
+      provisioning.delete(phone);
+    }
+  };
+
   const handleWebhook = (raw: WacliWebhookMessage): void => {
     if (raw.FromMe && raw.SenderJID) botIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
     const m = normalizeForMemu(raw, botIds, resolve);
@@ -184,14 +278,11 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     }
 
     const user = registry.getUserByPhone(phone);
-    if (!user || user.status !== "active") {
-      // Remitente no habilitado → saludo único, sin spamear.
-      if (!unknownGreeted.has(phone)) {
-        unknownGreeted.add(phone);
-        void client
-          .sendText(m.chatJid, "¡Hola! 👋 Todavía no estás habilitado en Memu. Registrate en https://host-web.ejemplo.com y activá tu WhatsApp.")
-          .catch(() => {});
-      }
+    // Gate de inferencia: solo hablan con el agente los usuarios ACTIVOS (pairing conectado) Y
+    // elegibles (suscripción vigente o cortesía). El resto entra al onboarding in-chat (pago →
+    // pairing → código). Una suscripción vencida corta la inferencia aunque siga vinculado. Ver onboard().
+    if (!user || user.status !== "active" || !isEligible(phone, user)) {
+      void onboard(phone, m.chatJid, m.text);
       return;
     }
     registry.touchActive(user.id);

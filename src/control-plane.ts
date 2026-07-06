@@ -148,9 +148,14 @@ const server = createServer((req, res) => {
       }
       if (email) registry.setEmail(userId, email); // atar el login al usuario (para el "¿ya vinculaste?")
       if (existing?.status === "active") return send(res, 200, { userId, status: "connected" });
-      registry.setStatus(userId, "pending");
-      startPairing(userId, phone);
-      console.log(dim(`[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}`));
+      // Idempotente: si ya hay un pairing en curso para este usuario, NO spawneamos otro wacli
+      // (evita doble-pairing / lock). El código lo devuelve el wait-loop de abajo.
+      const active = jobs.get(userId);
+      if (!active || active.status !== "pairing") {
+        registry.setStatus(userId, "pending");
+        startPairing(userId, phone);
+      }
+      console.log(dim(`[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}${active?.status === "pairing" ? " [job en curso]" : ""}`));
 
       // Esperamos brevemente el pair_code para devolverlo en la misma respuesta.
       const started = Date.now();
@@ -169,6 +174,25 @@ const server = createServer((req, res) => {
       registry.createLogin(token);
       console.log(dim(`[cp] login start ${token}`));
       return send(res, 200, { token });
+    }
+
+    // POST /billing { phone?, customerId?, subscriptionId?, status } → actualiza la suscripción de
+    // Stripe (lo llama el webhook de memu-web). Resuelve el usuario por teléfono (client_reference_id
+    // del checkout → lo crea si es nuevo) o por customerId (eventos de subscription.updated/deleted).
+    if (req.method === "POST" && url.pathname === "/billing") {
+      const body = await readJson(req).catch((): Record<string, unknown> => ({}));
+      const status = String(body.status ?? "").trim() || undefined;
+      const customerId = String(body.customerId ?? "").trim() || undefined;
+      const subscriptionId = String(body.subscriptionId ?? "").trim() || undefined;
+      const phone = body.phone ? normalizePhone(String(body.phone)) : null;
+
+      let user = phone ? registry.getUserByPhone(phone) : customerId ? registry.getUserByStripeCustomer(customerId) : null;
+      if (!user && phone) user = registry.addUser(phone, { status: "pending" }); // signup implícito al pagar
+      if (!user) return send(res, 404, { error: "usuario no encontrado (falta phone o customer conocido)" });
+
+      registry.setBilling(user.id, { status, customerId, subscriptionId });
+      console.log(dim(`[cp] billing u${user.id} → ${status ?? "?"}${customerId ? ` (${customerId.slice(0, 14)}…)` : ""}`));
+      return send(res, 200, { userId: user.id, ok: true });
     }
 
     // GET /login/status?token= → estado del token (pending | verified + userId/phone).

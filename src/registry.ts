@@ -22,6 +22,11 @@ export interface User {
   status: UserStatus;
   createdAt: string;
   lastActiveAt: string | null;
+  // --- Suscripción (Stripe, Fase B). `subscriptionStatus` guarda el status crudo de Stripe
+  // ('trialing' | 'active' | 'past_due' | 'canceled' | …); el acceso lo dan trialing|active.
+  subscriptionStatus: string | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
 }
 
 export interface Registry {
@@ -31,10 +36,13 @@ export interface Registry {
   getUser(id: number): User | null;
   getUserByPhone(phone: string): User | null;
   getUserByEmail(email: string): User | null;
+  getUserByStripeCustomer(customerId: string): User | null;
   /** Usuarios, opcionalmente filtrados por status; del más recientemente activo al más viejo. */
   listUsers(opts?: { status?: UserStatus }): User[];
   setStatus(id: number, status: UserStatus): void;
   setEmail(id: number, email: string): void;
+  /** Actualiza los campos de suscripción provistos (Stripe). Los `undefined` no se tocan. */
+  setBilling(id: number, fields: { status?: string; customerId?: string; subscriptionId?: string }): void;
   /** Marca actividad (para la priorización del pool de follows). */
   touchActive(id: number): void;
 
@@ -58,6 +66,9 @@ const rowToUser = (r: Record<string, unknown>): User => ({
   status: r.status as UserStatus,
   createdAt: r.created_at as string,
   lastActiveAt: (r.last_active_at as string | null) ?? null,
+  subscriptionStatus: (r.subscription_status as string | null) ?? null,
+  stripeCustomerId: (r.stripe_customer_id as string | null) ?? null,
+  stripeSubscriptionId: (r.stripe_subscription_id as string | null) ?? null,
 });
 
 export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
@@ -80,6 +91,14 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   } catch {
     /* ya existe */
   }
+  // Migración idempotente: campos de suscripción (Stripe, Fase B).
+  for (const col of ["subscription_status TEXT", "stripe_customer_id TEXT", "stripe_subscription_id TEXT"]) {
+    try {
+      db.exec(`ALTER TABLE users ADD COLUMN ${col}`);
+    } catch {
+      /* ya existe */
+    }
+  }
   // Tokens de login por WhatsApp (un solo uso, TTL corto).
   db.exec(`
     CREATE TABLE IF NOT EXISTS login_tokens (
@@ -96,12 +115,16 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   const selById = db.prepare("SELECT * FROM users WHERE id = ?");
   const selByPhone = db.prepare("SELECT * FROM users WHERE phone = ?");
   const selByEmail = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE");
+  const selByCustomer = db.prepare("SELECT * FROM users WHERE stripe_customer_id = ?");
   const selAll = db.prepare("SELECT * FROM users ORDER BY (last_active_at IS NULL), last_active_at DESC, id ASC");
   const selByStatus = db.prepare(
     "SELECT * FROM users WHERE status = ? ORDER BY (last_active_at IS NULL), last_active_at DESC, id ASC",
   );
   const updStatus = db.prepare("UPDATE users SET status = ? WHERE id = ?");
   const updEmail = db.prepare("UPDATE users SET email = ? WHERE id = ?");
+  const updSubStatus = db.prepare("UPDATE users SET subscription_status = ? WHERE id = ?");
+  const updCustomer = db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ?");
+  const updSubId = db.prepare("UPDATE users SET stripe_subscription_id = ? WHERE id = ?");
   const updActive = db.prepare("UPDATE users SET last_active_at = datetime('now') WHERE id = ?");
 
   const insLogin = db.prepare("INSERT INTO login_tokens (token) VALUES (?)");
@@ -136,6 +159,10 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
       const r = selByEmail.get(email) as Record<string, unknown> | undefined;
       return r ? rowToUser(r) : null;
     },
+    getUserByStripeCustomer(customerId) {
+      const r = selByCustomer.get(customerId) as Record<string, unknown> | undefined;
+      return r ? rowToUser(r) : null;
+    },
     listUsers(opts) {
       const rows = (opts?.status ? selByStatus.all(opts.status) : selAll.all()) as Array<Record<string, unknown>>;
       return rows.map(rowToUser);
@@ -145,6 +172,11 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
     },
     setEmail(id, email) {
       updEmail.run(email, id);
+    },
+    setBilling(id, fields) {
+      if (fields.status !== undefined) updSubStatus.run(fields.status, id);
+      if (fields.customerId !== undefined) updCustomer.run(fields.customerId, id);
+      if (fields.subscriptionId !== undefined) updSubId.run(fields.subscriptionId, id);
     },
     touchActive(id) {
       updActive.run(id);

@@ -43,6 +43,8 @@ export interface MemuStore {
   save(m: MemuMessage): boolean;
   /** Total de mensajes guardados. */
   count(): number;
+  /** Mensajes con texto todavía SIN embeber (backlog de indexado). 0 = índice al día. */
+  pendingEmbeddings(): number;
   /** Crea un reminder. Devuelve el id asignado. */
   addReminder(r: NewReminder): number;
   /** Reminders pendientes ya vencidos (fireAt <= nowMs), del más viejo al más nuevo. */
@@ -275,6 +277,17 @@ export function openStore(dbPath: string, userId = ""): MemuStore {
     },
     count(): number {
       return (db.prepare("SELECT count(*) AS n FROM messages").get() as { n: number }).n;
+    },
+    pendingEmbeddings(): number {
+      if (!vecEnabled) return 0; // sin sqlite-vec no hay indexado semántico → nada que esperar
+      return (
+        db
+          .prepare(
+            `SELECT count(*) AS n FROM messages m LEFT JOIN vec_messages v ON v.rowid = m.rowid
+             WHERE v.rowid IS NULL AND m.text IS NOT NULL AND length(trim(m.text)) >= 2`,
+          )
+          .get() as { n: number }
+      ).n;
     },
   };
 }

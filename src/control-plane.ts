@@ -11,7 +11,7 @@
 // Correr en host-backend: `pnpm control-plane`.
 
 import "./env.ts";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -47,10 +47,13 @@ interface Job {
   userId: number;
   status: PairStatus;
   code?: string; // pairing-code para mostrarle al usuario
+  codeAt?: number; // cuándo se emitió el código (los de WhatsApp caducan ~1-2 min)
   error?: string;
   startedAt: number;
+  child?: ChildProcess; // proceso wacli auth (para poder matarlo al refrescar un código vencido)
 }
 const jobs = new Map<number, Job>();
+const CODE_TTL_MS = 90_000; // pasado esto, un re-provision genera un código nuevo
 
 /** Arranca `wacli auth --phone` para un usuario, parsea los eventos NDJSON y actualiza el job +
  *  el registro. Al conectar → status del usuario 'active'. */
@@ -63,16 +66,29 @@ function startPairing(userId: number, phone: string): void {
     stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, WACLI_DEVICE_LABEL: DEVICE_LABEL },
   });
+  job.child = child;
 
   let settled = false;
   const finish = (status: "connected" | "failed", error?: string): void => {
     if (settled) return;
+    // Si este job ya fue reemplazado (código refrescado), no tocar el estado compartido del usuario.
+    if (jobs.get(userId) !== job) {
+      settled = true;
+      clearTimeout(timer);
+      return;
+    }
     settled = true;
     clearTimeout(timer);
     job.status = status;
     if (error) job.error = error;
     registry.setStatus(userId, status === "connected" ? "active" : "disabled");
-    if (status === "connected") registry.touchActive(userId);
+    if (status === "connected") {
+      registry.touchActive(userId);
+      // Recién vinculado → entra a la fase de INDEXADO (el bot lo avisa y retiene la inferencia
+      // hasta que el historial esté leído). Ver central-bot.ts. Solo si no estaba ya activo/indexado.
+      const u = registry.getUser(userId);
+      if (u?.onboardingState !== "activo") registry.setOnboardingState(userId, "indexando");
+    }
     console.log(dim(`[cp] u${userId} pairing → ${status}${error ? `: ${error}` : ""}`));
     if (status === "connected") setTimeout(() => child.kill("SIGTERM"), BOOTSTRAP_MS).unref();
     else if (!child.killed) child.kill("SIGTERM");
@@ -89,6 +105,7 @@ function startPairing(userId: number, phone: string): void {
         const e = JSON.parse(s) as { event?: string; data?: Record<string, unknown> };
         if (e.event === "pair_code" && typeof e.data?.code === "string") {
           job.code = e.data.code;
+          job.codeAt = Date.now();
           console.log(dim(`[cp] u${userId} pair_code emitido`));
         } else if (e.event === "connected") {
           finish("connected");
@@ -148,9 +165,22 @@ const server = createServer((req, res) => {
       }
       if (email) registry.setEmail(userId, email); // atar el login al usuario (para el "¿ya vinculaste?")
       if (existing?.status === "active") return send(res, 200, { userId, status: "connected" });
-      registry.setStatus(userId, "pending");
-      startPairing(userId, phone);
-      console.log(dim(`[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}`));
+      // Idempotente: si ya hay un pairing en curso, NO spawneamos otro wacli (evita doble-pairing /
+      // lock) y reusamos el código. PERO si el código ya venció (>CODE_TTL), matamos el viejo y
+      // arrancamos uno fresco — así el usuario que tardó puede pedir otro con solo re-escribir.
+      const active = jobs.get(userId);
+      const codeStale = active?.status === "pairing" && active.code != null && Date.now() - (active.codeAt ?? 0) > CODE_TTL_MS;
+      if (!active || active.status !== "pairing" || codeStale) {
+        if (codeStale && active?.child && !active.child.killed) active.child.kill("SIGTERM");
+        registry.setStatus(userId, "pending");
+        startPairing(userId, phone);
+      }
+      console.log(
+        dim(
+          `[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}` +
+            (codeStale ? " [código vencido → refresco]" : active?.status === "pairing" ? " [job en curso]" : ""),
+        ),
+      );
 
       // Esperamos brevemente el pair_code para devolverlo en la misma respuesta.
       const started = Date.now();
@@ -169,6 +199,25 @@ const server = createServer((req, res) => {
       registry.createLogin(token);
       console.log(dim(`[cp] login start ${token}`));
       return send(res, 200, { token });
+    }
+
+    // POST /billing { phone?, customerId?, subscriptionId?, status } → actualiza la suscripción de
+    // Stripe (lo llama el webhook de memu-web). Resuelve el usuario por teléfono (client_reference_id
+    // del checkout → lo crea si es nuevo) o por customerId (eventos de subscription.updated/deleted).
+    if (req.method === "POST" && url.pathname === "/billing") {
+      const body = await readJson(req).catch((): Record<string, unknown> => ({}));
+      const status = String(body.status ?? "").trim() || undefined;
+      const customerId = String(body.customerId ?? "").trim() || undefined;
+      const subscriptionId = String(body.subscriptionId ?? "").trim() || undefined;
+      const phone = body.phone ? normalizePhone(String(body.phone)) : null;
+
+      let user = phone ? registry.getUserByPhone(phone) : customerId ? registry.getUserByStripeCustomer(customerId) : null;
+      if (!user && phone) user = registry.addUser(phone, { status: "pending" }); // signup implícito al pagar
+      if (!user) return send(res, 404, { error: "usuario no encontrado (falta phone o customer conocido)" });
+
+      registry.setBilling(user.id, { status, customerId, subscriptionId });
+      console.log(dim(`[cp] billing u${user.id} → ${status ?? "?"}${customerId ? ` (${customerId.slice(0, 14)}…)` : ""}`));
+      return send(res, 200, { userId: user.id, ok: true });
     }
 
     // GET /login/status?token= → estado del token (pending | verified + userId/phone).

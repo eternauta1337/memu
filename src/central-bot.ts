@@ -68,7 +68,34 @@ const paymentMsg = (phone: string): string => {
   return lines.join("\n");
 };
 const PAST_DUE_MSG =
-  "Tu suscripción a Memu está vencida 😕 Renovala para seguir usándome y te reactivo al toque. Escribime *pagar* y te paso el link.";
+  "Tu suscripción a Memu está vencida 😕 Puede ser un problema con la tarjeta. Escribime *gestionar* y te paso el link para actualizarla o revisar tu plan.";
+
+// --- Customer Portal (autogestión de la suscripción) ---
+// La Stripe key vive solo en la box (memu-web), así que le pedimos a ella una sesión del portal y le
+// mandamos la URL al usuario. Gate con el mismo token compartido (CONTROL_PLANE_TOKEN). Ver
+// memu-web/app/api/stripe/portal/route.ts.
+const WEB_BASE = (process.env.MEMU_WEB_URL ?? "https://memu.chat").replace(/\/$/, "");
+const CP_TOKEN = process.env.CONTROL_PLANE_TOKEN ?? "";
+// Palabras que piden gestionar/cancelar la suscripción o cambiar la tarjeta (≠ WANT_PAY, que es dar
+// de alta). Solo dispara el portal si el usuario YA es cliente de Stripe (tiene customerId).
+const WANT_MANAGE =
+  /\b(cancelar|anular|desuscribir\w*|dar(me)?\s+de\s+baja)\b|\b(cambiar|actualizar)\b[^.]*\btarjeta\b|\bgestionar\b[^.]*\b(suscrip\w*|pago|plan|tarjeta|factura\w*)\b|\b(portal|facturaci[oó]n)\b/i;
+const PORTAL_MSG = (url: string): string =>
+  `Acá gestionás tu suscripción (cambiar tarjeta, ver facturas o cancelar) 👉 ${url}\n\n` +
+  "El link es de un solo uso y vence en un rato; si expira, escribime *gestionar* de nuevo.";
+async function portalUrl(customerId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${WEB_BASE}/api/stripe/portal`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${CP_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ customerId }),
+    });
+    const json = (await res.json().catch(() => ({}))) as { url?: string };
+    return res.ok && typeof json.url === "string" ? json.url : null;
+  } catch {
+    return null;
+  }
+}
 
 // --- Fase de INDEXADO (post-pairing) ---
 // Recién vinculado, el bot lee el historial antes de poder responder bien. Durante esa fase NO
@@ -260,6 +287,22 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     }
   };
 
+  // Autogestión: manda el link del Customer Portal (o avisa si no se pudo). Solo tiene sentido para
+  // usuarios que ya son clientes de Stripe (tienen customerId). Corre antes del gate de inferencia,
+  // así "cancelar mi suscripción" no cae en el agente.
+  const managing = new Set<string>(); // teléfonos con un pedido de portal en vuelo (anti-doble)
+  const manage = async (phone: string, chatJid: string, customerId: string): Promise<void> => {
+    if (managing.has(phone)) return;
+    managing.add(phone);
+    try {
+      const url = await portalUrl(customerId);
+      await sendBot(chatJid, url ? PORTAL_MSG(url) : "No pude abrir el portal ahora 🫤 Probá de nuevo en un minuto.");
+      console.log(dim(`[bot] portal ${phone} → ${url ? "ok" : "falló"}`));
+    } finally {
+      managing.delete(phone);
+    }
+  };
+
   const handleWebhook = (raw: WacliWebhookMessage): void => {
     if (raw.FromMe && raw.SenderJID) botIds.add(resolve(stripDeviceSuffix(raw.SenderJID)));
     const m = normalizeForMemu(raw, botIds, resolve);
@@ -289,6 +332,13 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     }
 
     const user = registry.getUserByPhone(phone);
+    // Autogestión de la suscripción (Customer Portal): si el usuario ya es cliente de Stripe y pide
+    // gestionar/cancelar/cambiar tarjeta, le mandamos el link del portal. Independiente del status
+    // (sirve para un activo que quiere cancelar y para un vencido que quiere arreglar la tarjeta).
+    if (user?.stripeCustomerId && WANT_MANAGE.test(m.text)) {
+      void manage(phone, m.chatJid, user.stripeCustomerId);
+      return;
+    }
     // Gate de inferencia: solo hablan con el agente los usuarios ACTIVOS (pairing conectado) Y
     // elegibles (suscripción vigente o cortesía). El resto entra al onboarding in-chat (pago →
     // pairing → código). Una suscripción vencida corta la inferencia aunque siga vinculado. Ver onboard().

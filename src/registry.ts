@@ -102,13 +102,18 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
     }
   }
   // Limpieza: el login por WhatsApp (token de un solo uso + email de Google) fue removido. Tiramos su
-  // tabla y —si el SQLite lo soporta— su columna. Ambas son idempotentes; el catch cubre "no existe"
-  // y los SQLite viejos sin DROP COLUMN (la columna queda inerte, ya no la referencia ningún código).
-  db.exec("DROP TABLE IF EXISTS login_tokens");
+  // tabla y —si el SQLite lo soporta— su columna. Cada una en su try/catch: corre sobre la DB en vivo
+  // (la abren ingest + control-plane), así que un lock transitorio, un "no existe" o un SQLite viejo
+  // sin DROP COLUMN NO deben tumbar el arranque — el objeto sobrante queda inerte, sin código que lo use.
+  try {
+    db.exec("DROP TABLE IF EXISTS login_tokens");
+  } catch {
+    /* lock transitorio / ya no existe → queda inerte, se reintenta en el próximo arranque */
+  }
   try {
     db.exec("ALTER TABLE users DROP COLUMN email");
   } catch {
-    /* ya no existe / SQLite sin DROP COLUMN → queda inerte */
+    /* lock transitorio / ya no existe / SQLite sin DROP COLUMN → queda inerte */
   }
   // Consentimiento de Términos + Privacidad (append-only, para que "quede registrado"). Se lleva por
   // TELÉFONO porque el gate corre en el onboarding, antes de que exista la fila de `users`. Cada

@@ -28,14 +28,6 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const isAudioType = (t?: string): boolean => t === "audio" || t === "ptt";
 const phoneOf = (jid: string): string => stripDeviceSuffix(jid).split("@")[0]!.replace(/\D/g, "");
 
-// Allowlist de CORTESÍA (opt-in): teléfonos que bypassean el pago (dígitos, coma-separados). VACÍA =
-// nadie es cortesía → todos pasan por la suscripción (el gate real es Stripe). Es puramente aditiva.
-const ALLOWLIST = (process.env.MEMU_ALLOWLIST ?? "")
-  .split(",")
-  .map((s) => s.replace(/\D/g, ""))
-  .filter(Boolean);
-const phoneAllowed = (phone: string): boolean => ALLOWLIST.includes(phone);
-
 // Onboarding in-chat. Ver <doc interno>.
 const pairingMsg = (code: string): string =>
   "¡Listo el pago! 🎉 Ahora conectá tu WhatsApp:\n\n" +
@@ -45,12 +37,11 @@ const pairingMsg = (code: string): string =>
   "Cuando lo vincules, leo tu historial unos minutos y ya te respondo. 📚";
 
 // --- Suscripción (Fase B, Stripe) ---
-// El acceso lo dan los estados 'trialing' | 'active'. La allowlist queda como lista de CORTESÍA
-// (bypass de pago para el dueño + testers). eligible = comp (allowlist) o suscripción vigente.
+// El acceso lo da el estado de la suscripción: 'trialing' | 'active'. La cortesía/comp (dueño, testers,
+// invitados) se hace con un cupón 100%-off en Stripe, que deja la sub en 'trialing'/'active' —
+// indistinguible de un pago, sin allowlist en el env. Ver onboard() y scripts/stripe-comp-setup.mjs.
 const subActive = (u: { subscriptionStatus: string | null } | null): boolean =>
   u?.subscriptionStatus === "trialing" || u?.subscriptionStatus === "active";
-const isEligible = (phone: string, u: { subscriptionStatus: string | null } | null): boolean =>
-  phoneAllowed(phone) || subActive(u);
 
 const LINK_MONTHLY = process.env.STRIPE_LINK_MONTHLY ?? "";
 const LINK_YEARLY = process.env.STRIPE_LINK_YEARLY ?? "";
@@ -253,8 +244,8 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   };
 
   // Onboarding in-chat (Fase B): máquina de estados derivada de (suscripción, status). El usuario NO
-  // está activo+elegible todavía. Ramas: (1) sin pago ni cortesía → link de pago (o aviso de vencido);
-  // (2) pago/cortesía OK pero sin vincular → dispara el pairing (idempotente) y manda el código. La
+  // está activo+suscripto todavía. Ramas: (1) sin suscripción vigente → link de pago (o aviso de vencido);
+  // (2) suscripción OK pero sin vincular → dispara el pairing (idempotente) y manda el código. La
   // inferencia se habilita recién cuando el pairing conecta (status → 'active'). Ver onboarding-y-stripe.md.
   const PROMPT_THROTTLE_MS = 60_000; // no reenviar el mismo prompt más seguido que esto
 
@@ -289,7 +280,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     // debe toparse con el gate. Los usuarios nuevos reciben el customerId recién al pagar (post-gate).
     if (!user?.stripeCustomerId && !(await ensureTerms(phone, chatJid, text))) return;
 
-    const paid = phoneAllowed(phone) || subActive(user);
+    const paid = subActive(user);
 
     if (!paid) {
       // Sin keyword: el link se (re)manda solo cuando el usuario escribe y no está suscripto, pero
@@ -307,7 +298,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
       return;
     }
 
-    // Pagó (o es cortesía) pero no está vinculado → asegurar el pairing y mandar el código. cpProvision
+    // Con suscripción vigente pero sin vincular → asegurar el pairing y mandar el código. cpProvision
     // es idempotente (no re-spawnea si ya hay un job en curso), así que sirve tanto para el primer
     // disparo como para reenviar el código en mensajes siguientes.
     if (provisioning.has(phone)) return;
@@ -338,12 +329,12 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     const phone = phoneOf(m.chatJid);
 
     const user = registry.getUserByPhone(phone);
-    // Gate de inferencia: solo hablan con el agente los usuarios ACTIVOS (pairing conectado) Y
-    // elegibles (suscripción vigente o cortesía). El resto entra al onboarding in-chat (pago →
-    // pairing → código). Una suscripción vencida corta la inferencia aunque siga vinculado. Ver onboard().
-    // La autogestión (cambiar tarjeta / cancelar) de un usuario activo la maneja el agente con la tool
+    // Gate de inferencia: solo hablan con el agente los usuarios ACTIVOS (pairing conectado) con
+    // suscripción vigente ('trialing'/'active'). El resto entra al onboarding in-chat (pago → pairing →
+    // código). Una suscripción vencida corta la inferencia aunque siga vinculado. Ver onboard(). La
+    // autogestión (cambiar tarjeta / cancelar) de un usuario activo la maneja el agente con la tool
     // gestionar_suscripcion — no hay keyword acá.
-    if (!user || user.status !== "active" || !isEligible(phone, user)) {
+    if (!user || user.status !== "active" || !subActive(user)) {
       void onboard(phone, m.chatJid, m.text.trim());
       return;
     }

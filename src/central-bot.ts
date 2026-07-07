@@ -337,23 +337,6 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
 
     const phone = phoneOf(m.chatJid);
 
-    // ¿Es un token de login por WhatsApp? (el usuario lo generó en la web y lo mandó acá). Al ser
-    // iniciado por el usuario NO hay riesgo de spam/ban. Verifica (crea el usuario si es nuevo →
-    // signup) y corta, sin rutearlo al agente.
-    const maybeToken = m.text.trim().toUpperCase();
-    if (/^MEMU-[A-Z0-9]{6}$/.test(maybeToken)) {
-      const userId = registry.verifyLogin(maybeToken, phone);
-      const reply = userId
-        ? "✅ ¡Listo! Verificaste tu WhatsApp. Volvé a la web para continuar."
-        : "Ese código de acceso no es válido o expiró 🫤 Generá uno nuevo en la web.";
-      void client
-        .sendText(m.chatJid, reply)
-        .then((r) => { if (r.id) sentByMemu.add(r.id); })
-        .catch(() => {});
-      console.log(dim(`[bot] login ${maybeToken} ${userId ? `→ u${userId}` : "inválido"}`));
-      return;
-    }
-
     const user = registry.getUserByPhone(phone);
     // Gate de inferencia: solo hablan con el agente los usuarios ACTIVOS (pairing conectado) Y
     // elegibles (suscripción vigente o cortesía). El resto entra al onboarding in-chat (pago →

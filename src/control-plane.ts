@@ -12,22 +12,11 @@
 
 import "./env.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { normalizePhone } from "./phone.ts";
 import { getRegistry } from "./registry.ts";
 import { wacliStoreDir } from "./users.ts";
-
-// Token de login por WhatsApp: prefijo reconocible (el bot lo detecta con regex) + 6 chars sin
-// ambigüedades. El usuario lo manda al bot por WhatsApp y eso lo verifica. Ver central-bot.ts.
-const TOKEN_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-function genLoginToken(): string {
-  const b = randomBytes(6);
-  let s = "MEMU-";
-  for (let i = 0; i < 6; i++) s += TOKEN_CHARS[b[i] % TOKEN_CHARS.length];
-  return s;
-}
 
 const HOST = process.env.CONTROL_PLANE_HOST ?? "0.0.0.0";
 const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 8788);
@@ -146,10 +135,10 @@ const server = createServer((req, res) => {
 
     if (!authed(req)) return send(res, 401, { error: "unauthorized" });
 
-    // POST /provision { email, phone } → crea (o reusa) el usuario y arranca el pairing.
+    // POST /provision { phone } → crea (o reusa) el usuario y arranca el pairing. Lo llama el bot
+    // central desde la conversación de WhatsApp (onboarding in-chat), después del pago.
     if (req.method === "POST" && url.pathname === "/provision") {
       const body = await readJson(req).catch((): Record<string, unknown> => ({}));
-      const email = String(body.email ?? "").trim().toLowerCase() || null;
       const phone = normalizePhone(String(body.phone ?? ""));
       if (!phone) {
         return send(res, 400, { error: "Número inválido. Poné tu WhatsApp con código de país (ej. +54 9 11…)." });
@@ -157,13 +146,7 @@ const server = createServer((req, res) => {
 
       // Dedup por teléfono (ya normalizado a E.164). Si ya está activo, no re-pareamos.
       const existing = registry.getUserByPhone(phone);
-      let userId: number;
-      if (existing) {
-        userId = existing.id;
-      } else {
-        userId = registry.addUser(phone, { status: "pending", email }).id;
-      }
-      if (email) registry.setEmail(userId, email); // atar el login al usuario (para el "¿ya vinculaste?")
+      const userId = existing ? existing.id : registry.addUser(phone, { status: "pending" }).id;
       if (existing?.status === "active") return send(res, 200, { userId, status: "connected" });
       // Idempotente: si ya hay un pairing en curso, NO spawneamos otro wacli (evita doble-pairing /
       // lock) y reusamos el código. PERO si el código ya venció (>CODE_TTL), matamos el viejo y
@@ -177,7 +160,7 @@ const server = createServer((req, res) => {
       }
       console.log(
         dim(
-          `[cp] provision u${userId} (${email ?? "s/email"}) phone=${phone}` +
+          `[cp] provision u${userId} phone=${phone}` +
             (codeStale ? " [código vencido → refresco]" : active?.status === "pairing" ? " [job en curso]" : ""),
         ),
       );
@@ -191,14 +174,6 @@ const server = createServer((req, res) => {
         await new Promise((r) => setTimeout(r, 400));
       }
       return send(res, 202, { userId, status: "pairing" }); // sin código aún → que polee /status
-    }
-
-    // POST /login/start → crea un token de login por WhatsApp. El usuario se lo manda al bot.
-    if (req.method === "POST" && url.pathname === "/login/start") {
-      const token = genLoginToken();
-      registry.createLogin(token);
-      console.log(dim(`[cp] login start ${token}`));
-      return send(res, 200, { token });
     }
 
     // POST /billing { phone?, customerId?, subscriptionId?, status } → actualiza la suscripción de
@@ -218,25 +193,6 @@ const server = createServer((req, res) => {
       registry.setBilling(user.id, { status, customerId, subscriptionId });
       console.log(dim(`[cp] billing u${user.id} → ${status ?? "?"}${customerId ? ` (${customerId.slice(0, 14)}…)` : ""}`));
       return send(res, 200, { userId: user.id, ok: true });
-    }
-
-    // GET /login/status?token= → estado del token (pending | verified + userId/phone).
-    if (req.method === "GET" && url.pathname === "/login/status") {
-      const token = (url.searchParams.get("token") ?? "").trim();
-      const login = token ? registry.getLogin(token) : null;
-      if (!login) return send(res, 200, { status: "unknown" });
-      return send(res, 200, login);
-    }
-
-    // GET /user?id= | ?email= → estado de vinculación del usuario (para el "¿ya vinculaste?").
-    if (req.method === "GET" && url.pathname === "/user") {
-      const id = (url.searchParams.get("id") ?? "").trim();
-      const email = (url.searchParams.get("email") ?? "").trim().toLowerCase();
-      const user = id ? registry.getUser(Number(id)) : email ? registry.getUserByEmail(email) : null;
-      if (!id && !email) return send(res, 400, { error: "falta id o email" });
-      if (!user) return send(res, 200, { status: "none" });
-      const status = user.status === "active" ? "connected" : user.status === "pending" ? "pending" : "none";
-      return send(res, 200, { userId: user.id, status, phone: user.phone });
     }
 
     // GET /status/:userId → estado del pairing.

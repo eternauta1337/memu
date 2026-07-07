@@ -74,6 +74,35 @@ const paymentMsg = (phone: string): string => {
 const PAST_DUE_MSG =
   "Tu suscripción a Memu está vencida 😕 Suele ser un problema con la tarjeta. La actualizás o revisás tu plan acá:";
 
+// --- Consentimiento de Términos + Privacidad (gate legal, ANTES del pago) -----------------------
+// Antes de mandar el link de pago le pedimos al usuario nuevo que acepte los Términos y la Política
+// de Privacidad, y lo dejamos REGISTRADO (append-only en registry.db, ver registry.ts). Bumpear esta
+// versión cuando cambie la fecha de "Última actualización" de /terminos + /privacidad hace que los
+// usuarios en el embudo (todavía sin pagar) tengan que volver a aceptar; los clientes ya existentes
+// (con suscripción en Stripe) no se re-preguntan. Mantener en sync con app/(legal)/*/page.tsx.
+const TERMS_VERSION = "2026-07-07";
+const WEB = process.env.MEMU_WEB_URL ?? "https://memu.chat";
+// Respuesta afirmativa a "¿aceptás?". Solo se evalúa DESPUÉS de haberle mostrado los términos, así
+// que un "sí/dale/ok" acá es inequívocamente consentimiento a lo que le mostramos.
+const ACCEPT_RE = /\b(acepto|acept[aá]s?|de acuerdo|confirmo)\b|^\s*(s[ií]|dale|ok(ay)?|listo)(?![\p{L}])/iu;
+// Negación: nunca contar como consentimiento algo que trae un "no/nunca/rechazo…" (p.ej. "no acepto").
+// Ante la duda, re-preguntamos (falso negativo) antes que registrar un consentimiento que no fue.
+const NEGATE_RE = /\b(no|nunca|jam[aá]s|rechazo|niego|tampoco)\b/iu;
+const isAcceptance = (text: string): boolean => ACCEPT_RE.test(text) && !NEGATE_RE.test(text);
+const termsMsg = (): string =>
+  "Antes de arrancar, un paso rápido 📄 Necesito que aceptes los *Términos del Servicio* y la " +
+  "*Política de Privacidad* de Memu:\n\n" +
+  `• Términos: ${WEB}/terminos\n` +
+  `• Privacidad: ${WEB}/privacidad\n\n` +
+  "En breve: Memu se vincula a tu WhatsApp como *dispositivo*, lee tus chats para armarte una memoria " +
+  "y *nunca* le escribe a nadie por vos. Usar apps de terceros sobre WhatsApp puede ir contra las " +
+  "reglas de Meta y, en algún caso, derivar en el bloqueo de tu cuenta — lo asumís vos.\n\n" +
+  "Si estás de acuerdo, respondé *ACEPTO* y seguimos 🙌";
+const TERMS_REPROMPT =
+  "Para poder seguir necesito tu OK a los Términos y la Privacidad (memu.chat/terminos · memu.chat/privacidad). " +
+  "Respondé por *texto* la palabra *ACEPTO* y arrancamos 🙌";
+const TERMS_OK = "¡Genial! Quedó registrado tu consentimiento ✅";
+
 // --- Fase de INDEXADO (post-pairing) ---
 // Recién vinculado, el bot lee el historial antes de poder responder bien. Durante esa fase NO
 // infiere: avisa que está leyendo y, cuando el índice está al día, avisa que ya está listo.
@@ -131,6 +160,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
 
   const sentByMemu = new Set<string>();
   const paymentPromptAt = new Map<string, number>(); // último reenvío del link de pago/portal (throttle)
+  const termsPromptAt = new Map<string, number>(); // último reenvío del gate de términos (throttle)
   const provisioning = new Set<string>(); // teléfonos con un /provision en vuelo (anti-doble-pairing)
   const indexingReplyAt = new Map<string, number>(); // throttle del aviso "todavía leyendo"
 
@@ -227,8 +257,38 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   // (2) pago/cortesía OK pero sin vincular → dispara el pairing (idempotente) y manda el código. La
   // inferencia se habilita recién cuando el pairing conecta (status → 'active'). Ver onboarding-y-stripe.md.
   const PROMPT_THROTTLE_MS = 60_000; // no reenviar el mismo prompt más seguido que esto
-  const onboard = async (phone: string, chatJid: string): Promise<void> => {
+
+  // Gate de consentimiento: antes de mandar el link de pago, el usuario nuevo tiene que aceptar los
+  // Términos + Privacidad, y queda registrado (append-only). Devuelve true si el consentimiento ya
+  // está OK y se puede seguir con el onboarding; false si todavía estamos esperando la aceptación
+  // (ya mandamos/reenviamos el prompt). `text` es el mensaje entrante (para detectar la aceptación).
+  const ensureTerms = async (phone: string, chatJid: string, text: string): Promise<boolean> => {
+    if (registry.hasAcceptedTerms(phone, TERMS_VERSION)) return true;
+    // Solo interpretamos la respuesta como aceptación si YA le mostramos los términos (así el primer
+    // mensaje —que puede traer un "ok/dale" casual— nunca cuenta como consentimiento sin haberlos visto).
+    if (registry.wasPromptedTerms(phone, TERMS_VERSION) && isAcceptance(text)) {
+      registry.recordTermsAcceptance(phone, TERMS_VERSION, text.slice(0, 500));
+      await sendBot(chatJid, TERMS_OK);
+      console.log(dim(`[bot] términos aceptados por ${phone} (v${TERMS_VERSION})`));
+      return true;
+    }
+    const already = registry.wasPromptedTerms(phone, TERMS_VERSION);
+    const last = termsPromptAt.get(phone) ?? 0;
+    if (Date.now() - last < PROMPT_THROTTLE_MS) return false;
+    termsPromptAt.set(phone, Date.now());
+    registry.recordTermsPrompt(phone, TERMS_VERSION);
+    await sendBot(chatJid, already ? TERMS_REPROMPT : termsMsg());
+    return false;
+  };
+
+  const onboard = async (phone: string, chatJid: string, text: string): Promise<void> => {
     const user = registry.getUserByPhone(phone);
+    // Consentimiento primero (queda registrado). Si todavía no aceptó, cortamos acá: no mostramos el
+    // link de pago ni disparamos el pairing hasta tener el OK a los Términos + Privacidad. Los que ya
+    // pasaron por Stripe (stripeCustomerId) no se re-preguntan: un past_due que arregla la tarjeta no
+    // debe toparse con el gate. Los usuarios nuevos reciben el customerId recién al pagar (post-gate).
+    if (!user?.stripeCustomerId && !(await ensureTerms(phone, chatJid, text))) return;
+
     const paid = phoneAllowed(phone) || subActive(user);
 
     if (!paid) {
@@ -301,7 +361,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     // La autogestión (cambiar tarjeta / cancelar) de un usuario activo la maneja el agente con la tool
     // gestionar_suscripcion — no hay keyword acá.
     if (!user || user.status !== "active" || !isEligible(phone, user)) {
-      void onboard(phone, m.chatJid);
+      void onboard(phone, m.chatJid, m.text.trim());
       return;
     }
     // Fase de INDEXADO: vinculado pero todavía leyendo el historial → no inferir, avisar (throttle).

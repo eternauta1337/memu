@@ -61,6 +61,18 @@ export interface Registry {
    *  token. Devuelve el userId, o null si el token no existe / no está pendiente / expiró. */
   verifyLogin(token: string, phone: string): number | null;
 
+  // --- Consentimiento de Términos + Privacidad (append-only, por teléfono). Ver central-bot.ts.
+  /** Registra que se le mostraron los términos (versión) a un teléfono. */
+  recordTermsPrompt(phone: string, version: string): void;
+  /** Registra la aceptación de los términos (con el texto literal del mensaje, para auditoría). */
+  recordTermsAcceptance(phone: string, version: string, text: string): void;
+  /** ¿El teléfono ya aceptó ESTA versión de los términos? */
+  hasAcceptedTerms(phone: string, version: string): boolean;
+  /** ¿Ya le mostramos ESTA versión de los términos? (para interpretar la respuesta como aceptación). */
+  wasPromptedTerms(phone: string, version: string): boolean;
+  /** Última aceptación registrada para el teléfono (o null). */
+  latestTermsAcceptance(phone: string): { version: string; acceptedAt: string; text: string | null } | null;
+
   close(): void;
 }
 
@@ -120,6 +132,21 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+  // Consentimiento de Términos + Privacidad (append-only, para que "quede registrado"). Se lleva por
+  // TELÉFONO porque el gate corre en el onboarding, antes de que exista la fila de `users`. Cada
+  // fila es un evento: 'prompted' (le mostramos los términos) o 'accepted' (respondió que acepta,
+  // con el texto literal). `version` es la fecha de "Última actualización" de la web (ver central-bot.ts).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS terms_events (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone      TEXT NOT NULL,
+      kind       TEXT NOT NULL,   -- 'prompted' | 'accepted'
+      version    TEXT NOT NULL,
+      text       TEXT,            -- mensaje literal con el que aceptó (auditoría)
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_terms_events_phone ON terms_events (phone);
+  `);
 
   const insAuto = db.prepare("INSERT INTO users (phone, status, email) VALUES (?, ?, ?)");
   const insWithId = db.prepare("INSERT INTO users (id, phone, status, email) VALUES (?, ?, ?, ?)");
@@ -147,6 +174,16 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   );
   const updLoginVerified = db.prepare(
     "UPDATE login_tokens SET status = 'verified', user_id = ?, phone = ? WHERE token = ?",
+  );
+
+  const insTermsEvent = db.prepare(
+    "INSERT INTO terms_events (phone, kind, version, text) VALUES (?, ?, ?, ?)",
+  );
+  const selTermsExists = db.prepare(
+    "SELECT 1 FROM terms_events WHERE phone = ? AND kind = ? AND version = ? LIMIT 1",
+  );
+  const selLatestAcceptance = db.prepare(
+    "SELECT version, text, created_at FROM terms_events WHERE phone = ? AND kind = 'accepted' ORDER BY id DESC LIMIT 1",
   );
 
   return {
@@ -211,6 +248,24 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
       const userId = existing ? existing.id : Number(insAuto.run(phone, "pending", null).lastInsertRowid);
       updLoginVerified.run(userId, phone, token);
       return userId;
+    },
+    recordTermsPrompt(phone, version) {
+      insTermsEvent.run(phone, "prompted", version, null);
+    },
+    recordTermsAcceptance(phone, version, text) {
+      insTermsEvent.run(phone, "accepted", version, text);
+    },
+    hasAcceptedTerms(phone, version) {
+      return selTermsExists.get(phone, "accepted", version) != null;
+    },
+    wasPromptedTerms(phone, version) {
+      return selTermsExists.get(phone, "prompted", version) != null;
+    },
+    latestTermsAcceptance(phone) {
+      const r = selLatestAcceptance.get(phone) as
+        | { version: string; text: string | null; created_at: string }
+        | undefined;
+      return r ? { version: r.version, acceptedAt: r.created_at, text: r.text } : null;
     },
     close() {
       db.close();

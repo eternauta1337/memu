@@ -33,6 +33,55 @@ export interface NewReminder {
   recurrence?: Recurrence;
 }
 
+/** Estados de una tarea: tres "vivos" (pendiente → activa → en progreso) y dos de cierre
+ *  (hecha / descartada). Los vivos son los que lista openTasks. */
+export type TaskStatus = "pending" | "active" | "in_progress" | "done" | "dropped";
+export type TaskPriority = "low" | "medium" | "high";
+
+export interface Task {
+  id: number;
+  text: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  dueAt: string | null; // YYYY-MM-DD, metadata pura (ordena la lista, nunca dispara nada)
+  sourceMsgId: string | null; // mensaje del que nació (para la detección de compromisos, futura)
+  chatJid: string | null; // chat relacionado (ídem)
+  createdAt: string;
+  closedAt: string | null;
+}
+
+export interface NewTask {
+  text: string;
+  priority?: TaskPriority;
+  dueAt?: string | null;
+  sourceMsgId?: string | null;
+  chatJid?: string | null;
+}
+
+/** Sugerencia de tarea detectada por el REM (rem.ts), esperando el sí/no de la persona. */
+export interface TaskSuggestion {
+  id: number;
+  text: string;
+  reason: string | null; // cita textual del chat que muestra el compromiso
+  chatJid: string | null;
+  sourceMsgId: string | null;
+  dueAt: string | null;
+  status: "proposed" | "accepted" | "rejected" | "expired";
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface NewTaskSuggestion {
+  text: string;
+  reason?: string | null;
+  chatJid?: string | null;
+  sourceMsgId?: string | null;
+  dueAt?: string | null;
+  /** Huella del compromiso (chat + texto normalizado). Única PARA SIEMPRE: una sugerencia
+   *  rechazada o expirada no se vuelve a proponer. */
+  fingerprint: string;
+}
+
 export interface MemuStore {
   db: Database.Database;
   /** userId dueño de este store (para resolver rutas per-usuario, ej. el wacli store). */
@@ -55,6 +104,27 @@ export interface MemuStore {
   markFired(id: number, nextFireMs: number | null): void;
   /** Cancela un reminder pendiente. Devuelve true si había uno pendiente con ese id. */
   cancelReminder(id: number): boolean;
+
+  /** Crea una tarea. Devuelve el id asignado. */
+  addTask(t: NewTask): number;
+  /** Tareas vivas, ordenadas: en progreso → activas → pendientes; dentro de cada estado por
+   *  prioridad (alta primero), fecha límite (la más próxima arriba, sin fecha al final) y edad. */
+  openTasks(): Task[];
+  /** Cierra una tarea viva como hecha o descartada. Devuelve true si había una viva con ese id. */
+  closeTask(id: number, status: "done" | "dropped"): boolean;
+  /** Cambia estado y/o prioridad de una tarea viva. Devuelve true si había una viva con ese id. */
+  updateTask(id: number, patch: { status?: "pending" | "active" | "in_progress"; priority?: TaskPriority }): boolean;
+
+  /** Guarda una sugerencia del REM. Devuelve su id, o null si ya existía (mismo fingerprint). */
+  addTaskSuggestion(s: NewTaskSuggestion): number | null;
+  /** Sugerencias esperando el sí/no de la persona, de la más vieja a la más nueva. */
+  proposedTaskSuggestions(): TaskSuggestion[];
+  /** Una sugerencia por su id (o null si no existe). */
+  getTaskSuggestion(id: number): TaskSuggestion | null;
+  /** Resuelve una sugerencia propuesta. Devuelve true si estaba 'proposed'. */
+  resolveTaskSuggestion(id: number, status: "accepted" | "rejected" | "expired"): boolean;
+  /** Expira las propuestas sin respuesta de más de `hours` horas. Devuelve cuántas expiraron. */
+  expireTaskSuggestions(hours: number): number;
 
   /** Agrega un turno al diálogo del self-chat. Devuelve el id del turno. */
   appendTurn(role: "user" | "assistant", content: string): number;
@@ -124,6 +194,38 @@ export function openStore(dbPath: string, userId = ""): MemuStore {
     );
     CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at);
 
+    -- Tareas explícitas de la persona ("anotame comprar X"). Estado, no scheduling: quedan
+    -- vivas hasta que las cierra. due_at es metadata (ordena, no dispara). source_msg_id y
+    -- chat_jid quedan vacíos hasta que llegue la detección de compromisos.
+    CREATE TABLE IF NOT EXISTS tasks (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      text          TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending', -- pending|active|in_progress|done|dropped
+      priority      TEXT NOT NULL DEFAULT 'medium',  -- low|medium|high
+      due_at        TEXT,                            -- YYYY-MM-DD
+      source_msg_id TEXT,
+      chat_jid      TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      closed_at     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(status, due_at);
+
+    -- Sugerencias de tareas del ciclo REM (rem.ts): compromisos detectados en los chats que
+    -- esperan el sí/no de la persona. El fingerprint es único para siempre: una rechazada o
+    -- expirada nunca se vuelve a proponer.
+    CREATE TABLE IF NOT EXISTS task_suggestions (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      text          TEXT NOT NULL,
+      reason        TEXT,                             -- cita textual del chat
+      chat_jid      TEXT,
+      source_msg_id TEXT,
+      due_at        TEXT,                             -- YYYY-MM-DD
+      fingerprint   TEXT NOT NULL UNIQUE,
+      status        TEXT NOT NULL DEFAULT 'proposed', -- proposed|accepted|rejected|expired
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at   TEXT
+    );
+
     -- Diálogo del self-chat con Memu (persistimos ambos lados: los envíos de Memu NO vuelven
     -- por el webhook, así que hay que guardarlos acá para tener memoria conversacional).
     CREATE TABLE IF NOT EXISTS conversation (
@@ -146,6 +248,16 @@ export function openStore(dbPath: string, userId = ""): MemuStore {
       value TEXT NOT NULL
     );
   `);
+
+  // Migración de tasks v1 → v2: 'open' se partió en pending/active/in_progress y apareció
+  // `priority`. Detectamos la tabla vieja por la ausencia de esa columna.
+  const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+  if (!taskCols.some((c) => c.name === "priority")) {
+    db.exec(`
+      ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium';
+      UPDATE tasks SET status = 'pending' WHERE status = 'open';
+    `);
+  }
 
   // sqlite-vec: tabla virtual de vectores, linkeada a messages por rowid. Best-effort: si la
   // extensión no carga, el resto del store sigue funcionando (retrieval cae a keyword).
@@ -179,6 +291,39 @@ export function openStore(dbPath: string, userId = ""): MemuStore {
   );
   const updCancel = db.prepare("UPDATE reminders SET status = 'cancelled' WHERE id = ? AND status = 'pending'");
 
+  // status explícito (no el DEFAULT de la tabla): en DBs migradas de v1 el default sigue
+  // siendo 'open' (ALTER TABLE no lo cambia) y la tarea nacería invisible para openTasks.
+  const insTask = db.prepare(
+    "INSERT INTO tasks (text, status, priority, due_at, source_msg_id, chat_jid) VALUES (@text, 'pending', @priority, @dueAt, @sourceMsgId, @chatJid)",
+  );
+  const selOpenTasks = db.prepare(`
+    SELECT * FROM tasks WHERE status IN ('pending', 'active', 'in_progress')
+    ORDER BY
+      CASE status WHEN 'in_progress' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+      CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+      (due_at IS NULL), due_at ASC, id ASC
+  `);
+  const updCloseTask = db.prepare(
+    "UPDATE tasks SET status = @status, closed_at = datetime('now') WHERE id = @id AND status NOT IN ('done', 'dropped')",
+  );
+  const updTask = db.prepare(`
+    UPDATE tasks SET status = COALESCE(@status, status), priority = COALESCE(@priority, priority)
+    WHERE id = @id AND status NOT IN ('done', 'dropped')
+  `);
+
+  const insSuggestion = db.prepare(`
+    INSERT OR IGNORE INTO task_suggestions (text, reason, chat_jid, source_msg_id, due_at, fingerprint)
+    VALUES (@text, @reason, @chatJid, @sourceMsgId, @dueAt, @fingerprint)
+  `);
+  const selProposed = db.prepare("SELECT * FROM task_suggestions WHERE status = 'proposed' ORDER BY id ASC");
+  const selSuggestion = db.prepare("SELECT * FROM task_suggestions WHERE id = ?");
+  const updSuggestion = db.prepare(
+    "UPDATE task_suggestions SET status = @status, resolved_at = datetime('now') WHERE id = @id AND status = 'proposed'",
+  );
+  const expSuggestions = db.prepare(
+    "UPDATE task_suggestions SET status = 'expired', resolved_at = datetime('now') WHERE status = 'proposed' AND created_at < datetime('now', ?)",
+  );
+
   const insTurn = db.prepare("INSERT INTO conversation (role, content) VALUES (?, ?)");
   const selTurns = db.prepare("SELECT id, role, content, ts FROM conversation WHERE id > ? ORDER BY id ASC");
   const insFact = db.prepare("INSERT INTO user_memory (text) VALUES (?)");
@@ -188,6 +333,30 @@ export function openStore(dbPath: string, userId = ""): MemuStore {
   const setSt = db.prepare(
     "INSERT INTO session_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   );
+
+  const rowToTask = (r: Record<string, unknown>): Task => ({
+    id: r.id as number,
+    text: r.text as string,
+    status: r.status as TaskStatus,
+    priority: r.priority as TaskPriority,
+    dueAt: (r.due_at as string | null) ?? null,
+    sourceMsgId: (r.source_msg_id as string | null) ?? null,
+    chatJid: (r.chat_jid as string | null) ?? null,
+    createdAt: r.created_at as string,
+    closedAt: (r.closed_at as string | null) ?? null,
+  });
+
+  const rowToSuggestion = (r: Record<string, unknown>): TaskSuggestion => ({
+    id: r.id as number,
+    text: r.text as string,
+    reason: (r.reason as string | null) ?? null,
+    chatJid: (r.chat_jid as string | null) ?? null,
+    sourceMsgId: (r.source_msg_id as string | null) ?? null,
+    dueAt: (r.due_at as string | null) ?? null,
+    status: r.status as TaskSuggestion["status"],
+    createdAt: r.created_at as string,
+    resolvedAt: (r.resolved_at as string | null) ?? null,
+  });
 
   const rowToReminder = (r: Record<string, unknown>): Reminder => ({
     id: r.id as number,
@@ -228,6 +397,50 @@ export function openStore(dbPath: string, userId = ""): MemuStore {
     },
     cancelReminder(id: number): boolean {
       return updCancel.run(id).changes > 0;
+    },
+    addTask(t: NewTask): number {
+      const res = insTask.run({
+        text: t.text,
+        priority: t.priority ?? "medium",
+        dueAt: t.dueAt ?? null,
+        sourceMsgId: t.sourceMsgId ?? null,
+        chatJid: t.chatJid ?? null,
+      });
+      return Number(res.lastInsertRowid);
+    },
+    openTasks(): Task[] {
+      return (selOpenTasks.all() as Array<Record<string, unknown>>).map(rowToTask);
+    },
+    closeTask(id: number, status: "done" | "dropped"): boolean {
+      return updCloseTask.run({ id, status }).changes > 0;
+    },
+    updateTask(id: number, patch: { status?: "pending" | "active" | "in_progress"; priority?: TaskPriority }): boolean {
+      if (!patch.status && !patch.priority) return false;
+      return updTask.run({ id, status: patch.status ?? null, priority: patch.priority ?? null }).changes > 0;
+    },
+    addTaskSuggestion(s: NewTaskSuggestion): number | null {
+      const res = insSuggestion.run({
+        text: s.text,
+        reason: s.reason ?? null,
+        chatJid: s.chatJid ?? null,
+        sourceMsgId: s.sourceMsgId ?? null,
+        dueAt: s.dueAt ?? null,
+        fingerprint: s.fingerprint,
+      });
+      return res.changes > 0 ? Number(res.lastInsertRowid) : null;
+    },
+    proposedTaskSuggestions(): TaskSuggestion[] {
+      return (selProposed.all() as Array<Record<string, unknown>>).map(rowToSuggestion);
+    },
+    getTaskSuggestion(id: number): TaskSuggestion | null {
+      const r = selSuggestion.get(id) as Record<string, unknown> | undefined;
+      return r ? rowToSuggestion(r) : null;
+    },
+    resolveTaskSuggestion(id: number, status: "accepted" | "rejected" | "expired"): boolean {
+      return updSuggestion.run({ id, status }).changes > 0;
+    },
+    expireTaskSuggestions(hours: number): number {
+      return expSuggestions.run(`-${Math.max(1, Math.floor(hours))} hours`).changes;
     },
     appendTurn(role: "user" | "assistant", content: string): number {
       return Number(insTurn.run(role, content).lastInsertRowid);

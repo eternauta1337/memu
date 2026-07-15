@@ -5,6 +5,15 @@
 import { portalUrl } from "./billing.ts";
 import { getRegistry } from "./registry.ts";
 import { fmtWhen, nextFire, reminderFromFields } from "./reminders.ts";
+import {
+  fmtDue,
+  fmtTaskList,
+  normalizeDue,
+  normalizePriority,
+  normalizeStatus,
+  PRIORITY_LABEL,
+  STATUS_LABEL,
+} from "./tasks.ts";
 import { pendingChats, readChat, recentChats, searchMessages } from "./retrieval.ts";
 import type { MemuStore } from "./store.ts";
 import type { ToolSpec } from "./llm.ts";
@@ -125,6 +134,105 @@ export const TOOLS: ToolSpec[] = [
   {
     type: "function",
     function: {
+      name: "crear_tarea",
+      description:
+        "Anota una tarea en la lista de pendientes de la persona (ej: 'comprar el regalo de Marta'). La lista NO avisa sola: si la persona quiere que le AVISES en un momento dado, usá crear_recordatorio en vez de esta.",
+      parameters: {
+        type: "object",
+        properties: {
+          texto: { type: "string", description: "la tarea, breve (ej: 'Comprar regalo de Marta')" },
+          prioridad: {
+            type: "string",
+            description: "opcional: 'baja', 'media' o 'alta'. Omitir si la persona no la indica (queda media).",
+          },
+          fecha_limite: {
+            type: "string",
+            description: "opcional: fecha límite YYYY-MM-DD (solo ordena la lista, no avisa). Omitir si no tiene.",
+          },
+        },
+        required: ["texto"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "listar_tareas",
+      description:
+        "Lista las tareas vivas de la persona, agrupadas por estado (en progreso, activas, pendientes), con su #id.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "actualizar_tarea",
+      description:
+        "Cambia el estado y/o la prioridad de una tarea, por su id. Para marcarla hecha usá completar_tarea.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "integer", description: "id de la tarea" },
+          estado: { type: "string", description: "opcional: 'pendiente', 'activa' o 'en progreso'" },
+          prioridad: { type: "string", description: "opcional: 'baja', 'media' o 'alta'" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "completar_tarea",
+      description: "Marca una tarea como HECHA, por su id.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "integer", description: "id de la tarea" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "descartar_tarea",
+      description: "Descarta una tarea que ya no aplica o que la persona abandonó (NO la hizo), por su id.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "integer", description: "id de la tarea" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "aceptar_sugerencia",
+      description:
+        "Acepta una sugerencia de tarea del REM (el repaso nocturno de los chats), por su id de sugerencia: la anota como tarea real.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "integer", description: "id de la sugerencia" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rechazar_sugerencia",
+      description:
+        "Rechaza una sugerencia de tarea del REM, por su id de sugerencia. No se la vuelve a proponer nunca.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "integer", description: "id de la sugerencia" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "gestionar_suscripcion",
       description:
         "Devuelve un link al portal de Stripe donde la persona gestiona su suscripción: cambiar la tarjeta, ver facturas, o CANCELAR / darse de baja. Usalo cuando pida gestionar el pago/suscripción, cambiar la tarjeta, ver sus facturas, cancelar o darse de baja.",
@@ -189,6 +297,70 @@ export async function runTool(
         const id = int("id", 0);
         if (!id) return "Error: falta el id.";
         return store.cancelReminder(id) ? `Recordatorio #${id} cancelado.` : `No hay recordatorio pendiente #${id}.`;
+      }
+      case "crear_tarea": {
+        const texto = str("texto");
+        if (!texto) return "Error: falta el texto de la tarea.";
+        const fecha = str("fecha_limite");
+        const dueAt = normalizeDue(fecha || null);
+        if (fecha && !dueAt) return "Error: no pude interpretar la fecha límite (necesito YYYY-MM-DD).";
+        const prio = str("prioridad");
+        const priority = normalizePriority(prio || null);
+        if (prio && !priority) return "Error: prioridad inválida (baja, media o alta).";
+        const id = store.addTask({ text: texto, priority: priority ?? "medium", dueAt });
+        const extras = [priority && priority !== "medium" ? `prioridad ${PRIORITY_LABEL[priority]}` : "", dueAt ? fmtDue(dueAt) : ""]
+          .filter(Boolean)
+          .join(", ");
+        return `Tarea #${id} anotada: "${texto}"${extras ? ` — ${extras}` : ""}.`;
+      }
+      case "listar_tareas": {
+        const ts = store.openTasks();
+        if (ts.length === 0) return "No tenés tareas vivas.";
+        return fmtTaskList(ts);
+      }
+      case "actualizar_tarea": {
+        const id = int("id", 0);
+        if (!id) return "Error: falta el id.";
+        const estado = str("estado");
+        const status = normalizeStatus(estado || null);
+        if (estado && !status) return "Error: estado inválido (pendiente, activa o en progreso; para cerrarla usá completar_tarea o descartar_tarea).";
+        const prio = str("prioridad");
+        const priority = normalizePriority(prio || null);
+        if (prio && !priority) return "Error: prioridad inválida (baja, media o alta).";
+        if (!status && !priority) return "Error: no me pasaste nada para cambiar (estado y/o prioridad).";
+        if (!store.updateTask(id, { status: status ?? undefined, priority: priority ?? undefined })) {
+          return `No hay tarea viva #${id}.`;
+        }
+        const cambios = [status ? `estado ${STATUS_LABEL[status]}` : "", priority ? `prioridad ${PRIORITY_LABEL[priority]}` : ""]
+          .filter(Boolean)
+          .join(", ");
+        return `Tarea #${id} actualizada: ${cambios}.`;
+      }
+      case "completar_tarea": {
+        const id = int("id", 0);
+        if (!id) return "Error: falta el id.";
+        return store.closeTask(id, "done") ? `Tarea #${id} completada.` : `No hay tarea abierta #${id}.`;
+      }
+      case "descartar_tarea": {
+        const id = int("id", 0);
+        if (!id) return "Error: falta el id.";
+        return store.closeTask(id, "dropped") ? `Tarea #${id} descartada.` : `No hay tarea abierta #${id}.`;
+      }
+      case "aceptar_sugerencia": {
+        const id = int("id", 0);
+        if (!id) return "Error: falta el id.";
+        const s = store.getTaskSuggestion(id);
+        if (!s || s.status !== "proposed") return `No hay sugerencia pendiente #${id}.`;
+        store.resolveTaskSuggestion(id, "accepted");
+        const tid = store.addTask({ text: s.text, dueAt: s.dueAt, chatJid: s.chatJid, sourceMsgId: s.sourceMsgId });
+        return `Sugerencia #${id} aceptada → tarea #${tid}: "${s.text}"${s.dueAt ? ` — ${fmtDue(s.dueAt)}` : ""}.`;
+      }
+      case "rechazar_sugerencia": {
+        const id = int("id", 0);
+        if (!id) return "Error: falta el id.";
+        return store.resolveTaskSuggestion(id, "rejected")
+          ? `Sugerencia #${id} rechazada (no la vuelvo a proponer).`
+          : `No hay sugerencia pendiente #${id}.`;
       }
       case "gestionar_suscripcion": {
         const u = getRegistry().getUser(Number(store.userId));

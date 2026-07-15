@@ -7,7 +7,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { askMemu } from "./agent.ts";
+import { askMemu, chatNames } from "./agent.ts";
 import { portalUrl } from "./billing.ts";
 import { cpProvision, cpStatus } from "./cp-client.ts";
 import { generateDigest } from "./digest.ts";
@@ -16,6 +16,7 @@ import { openLidMap } from "./lidmap.ts";
 import { openMediaIndex } from "./media.ts";
 import { getRegistry } from "./registry.ts";
 import { nextFire } from "./reminders.ts";
+import { remMessage, runRem } from "./rem.ts";
 import { getStore } from "./store.ts";
 import { transcribe } from "./stt.ts";
 import { synthesize } from "./tts.ts";
@@ -383,6 +384,64 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   const reminderTimer = setInterval(() => void fireDueReminders(), 30_000);
   reminderTimer.unref();
 
+  // --- REM: consolidación nocturna (rem.ts) --------------------------------------------------
+  // Una vez por día, a las REM_HOUR (hora local de la persona; el server corre en UTC), repasa lo
+  // nuevo de los chats de cada usuario buscando compromisos y le propone tareas. Silencioso si no
+  // encuentra nada. Si el proceso estaba caído a esa hora, la corrida se recupera al arrancar
+  // (rem_last_run < último disparo agendado).
+  const REM_HOUR = Number(process.env.MEMU_REM_HOUR ?? 4);
+  const REM_UTC_OFFSET = Number(process.env.MEMU_REM_UTC_OFFSET ?? -3); // UY/AR
+  const REM_RETRY_MS = 30 * 60_000; // backoff si una corrida falla (ej. LLM caído)
+  const remAttemptAt = new Map<string, number>();
+  let remRunning = false;
+
+  // Último disparo agendado: hoy a las REM_HOUR locales (o ayer, si hoy todavía no llegó).
+  const lastScheduledRem = (nowMs: number): number => {
+    const d = new Date(nowMs);
+    let run = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), REM_HOUR - REM_UTC_OFFSET);
+    if (run > nowMs) run -= 86_400_000;
+    return run;
+  };
+
+  const remSweep = async (): Promise<void> => {
+    if (remRunning || closing) return;
+    remRunning = true;
+    try {
+      const due = lastScheduledRem(Date.now());
+      for (const user of registry.listUsers({ status: "active" })) {
+        if (closing) break;
+        if (!user.phone) continue;
+        const uid = String(user.id);
+        const store = getStore(uid);
+        if (Number(store.getState("rem_last_run") ?? 0) >= due) continue; // ya corrió este ciclo
+        if (Date.now() - (remAttemptAt.get(uid) ?? 0) < REM_RETRY_MS) continue; // falló hace poco
+        remAttemptAt.set(uid, Date.now());
+        try {
+          const names = chatNames(uid);
+          const res = await runRem(store, names, { excludeJids: botIds });
+          store.setState("rem_last_run", String(Date.now()));
+          if (res.suggestions.length) {
+            const body = remMessage(res.suggestions, names);
+            const sent = await client.sendText(`${user.phone}@s.whatsapp.net`, body);
+            if (sent.id) sentByMemu.add(sent.id);
+            store.appendTurn("assistant", body); // el agente tiene que "saber" que propuso esto
+          }
+          console.log(
+            dim(
+              `[bot] REM u${uid}: ${res.baseline ? "línea de base fijada" : `${res.scanned} nuevos · ${res.judged} chats · ${res.suggestions.length} sugerencias`}`,
+            ),
+          );
+        } catch (e) {
+          console.log(dim(`[bot] REM u${uid} falló (reintento en 30min): ${(e as Error)?.message ?? e}`));
+        }
+      }
+    } finally {
+      remRunning = false;
+    }
+  };
+  const remTimer = setInterval(() => void remSweep(), 60_000);
+  remTimer.unref();
+
   // --- Fase de indexado: avisar "leyendo" al entrar, y "listo" cuando el índice está al día ---
   const indexNotified = new Set<string>(); // ya mandamos el aviso proactivo "estoy leyendo"
   const readyStreak = new Map<string, number>(); // ticks consecutivos con el índice al día (anti-race)
@@ -457,6 +516,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     if (closing) return;
     closing = true;
     clearInterval(reminderTimer);
+    clearInterval(remTimer);
     clearInterval(onboardingTimer);
     stopFollow();
     lidmap.close();

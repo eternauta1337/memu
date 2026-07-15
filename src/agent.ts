@@ -6,7 +6,7 @@
 import { type ChatMessage, complete } from "./llm.ts";
 import { chatNames } from "./retrieval.ts";
 import { loadSession, maybeCompact, saveTurn } from "./session.ts";
-import type { MemuStore } from "./store.ts";
+import type { MemuStore, TaskSuggestion } from "./store.ts";
 import { runTool, TOOLS } from "./tools.ts";
 
 export { chatNames };
@@ -70,7 +70,7 @@ const VOICE_NOTE = `\n\nIMPORTANTE: la persona te va a ESCUCHAR (respondés por 
 y natural, como hablando: 2-4 frases, sin markdown, sin listas ni viñetas, sin emojis, sin URLs.
 Si hay mucho para decir, resumí lo más importante y ofrecé el detalle por texto.`;
 
-function buildSystem(facts: string[], summary: string, voice = false): string {
+function buildSystem(facts: string[], summary: string, voice = false, suggestions: TaskSuggestion[] = []): string {
   const base = `Sos Memu, un asistente que vive dentro del WhatsApp de la persona (en su chat "Mensajes
 contigo mismo"). Ayudás a manejar el quilombo de WhatsApp: qué tiene pendiente, a quién responder,
 qué pasó en sus chats y grupos. Hablás español rioplatense, concreto y directo, sin vueltas.
@@ -83,6 +83,14 @@ Reglas:
 - Si la persona te enseña un dato sobre sí misma o su gente ("mi mamá es Marta", "tal grupo es mi
   familia"), guardalo con la herramienta recordar.
 - Si te pide que le recuerdes/avises algo, o un resumen a cierta hora, usá crear_recordatorio.
+- Si te pide anotar algo para hacer ("anotame comprar X", "tengo que llamar a Y"), usá crear_tarea.
+  La lista se ve con listar_tareas y se cierra con completar_tarea (la hizo) o descartar_tarea (ya
+  no aplica). Cada tarea tiene prioridad (baja/media/alta) y estado (pendiente/activa/en progreso):
+  se cambian con actualizar_tarea (ej. "estoy con X" → en progreso; "X es urgente" → alta).
+  Mencioná siempre el #id de cada tarea.
+- Puede haber sugerencias de tareas del REM (el repaso nocturno de sus chats) esperando su sí/no
+  (si hay, las ves más abajo). Si las acepta usá aceptar_sugerencia con el id de la sugerencia; si
+  las rechaza, rechazar_sugerencia. NO uses crear_tarea para algo que viene de una sugerencia.
 - Si quiere gestionar su suscripción (cambiar la tarjeta, ver facturas, cancelar o darse de baja),
   usá gestionar_suscripcion y pasale el link TAL CUAL te lo devuelve (no lo acortes ni lo edites).
 - Citá los chats por su nombre. Sé breve.
@@ -92,7 +100,12 @@ AHORA (hora local): ${nowLabel()}`;
   const shown = facts.slice(-200);
   const mem = shown.length ? `\n\nLo que sabés de la persona:\n${shown.map((f) => `- ${f}`).join("\n")}` : "";
   const sum = summary ? `\n\nResumen de lo que venían hablando:\n${summary}` : "";
-  return base + mem + sum + (voice ? VOICE_NOTE : "");
+  const sug = suggestions.length
+    ? `\n\nSugerencias de tareas del REM esperando el sí/no de la persona (aceptar_sugerencia / rechazar_sugerencia, por id):\n${suggestions
+        .map((s) => `- #${s.id}: ${s.text}${s.reason ? ` (dijo: "${s.reason}")` : ""}`)
+        .join("\n")}`
+    : "";
+  return base + mem + sum + sug + (voice ? VOICE_NOTE : "");
 }
 
 /** Responde un mensaje de la persona corriendo el loop de agente sobre su WhatsApp.
@@ -102,9 +115,10 @@ export async function askMemu(store: MemuStore, question: string, opts?: { voice
   saveTurn(store, "user", question);
   const { summary, history } = loadSession(store);
   const facts = store.listFacts().map((f) => f.text);
+  const suggestions = store.proposedTaskSuggestions();
 
   const messages: ChatMessage[] = [
-    { role: "system", content: buildSystem(facts, summary, opts?.voice) },
+    { role: "system", content: buildSystem(facts, summary, opts?.voice, suggestions) },
     ...history,
   ];
 

@@ -13,6 +13,7 @@
     "migrate-lids": "tsx src/migrate-lids.ts",
     "backfill-media": "tsx src/backfill-media.ts",
     "ask": "tsx src/ask.ts",
+    "rem": "tsx src/rem.ts",
     "embed": "tsx src/embed-index.ts",
     "digest": "tsx src/digest.ts",
     "send-self": "tsx src/send-self.ts",

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { chatNames } from "./agent.ts";
 import { chat, type ChatMessage } from "./llm.ts";
 import { getStore, type MemuStore } from "./store.ts";
+import { fmtTaskList } from "./tasks.ts";
 import { DEFAULT_USER_ID, wacliStoreDir } from "./users.ts";
 import { WacliClient } from "./wacli/wacli-client.ts";
 
@@ -92,10 +93,18 @@ async function generateBody(store: MemuStore): Promise<string> {
   return (await chat(messages, { maxTokens: 900 })).trim();
 }
 
+// Tareas vivas, al pie del digest (determinístico, sin LLM). Las que llevan demasiado vivas
+// se señalan para que la lista no degenere en un cementerio.
+function tasksSection(store: MemuStore): string {
+  const tasks = store.openTasks();
+  if (tasks.length === 0) return "";
+  return `\n\n📝 *Tareas*\n${fmtTaskList(tasks, { stale: true })}`;
+}
+
 /** Digest completo, ya formateado y listo para postear en el self-chat. Reusado por el
  *  scheduler de reminders (`action='digest'`). */
 export async function generateDigest(store: MemuStore): Promise<string> {
-  return `🤖 📋 *Resumen del día*\n\n${await generateBody(store)}`;
+  return `🤖 📋 *Resumen del día*\n\n${await generateBody(store)}${tasksSection(store)}`;
 }
 
 async function main(): Promise<void> {

@@ -296,8 +296,14 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   // Onboarding in-chat (Fase B): máquina de estados derivada de (suscripción, status). El usuario NO
   // está activo+suscripto todavía. Ramas: (1) sin suscripción vigente → link de pago (o aviso de vencido);
   // (2) suscripción OK pero sin vincular → dispara el pairing (idempotente) y manda el código. La
-  // inferencia se habilita recién cuando el pairing conecta (status → 'active'). Ver onboarding-y-stripe.md.
+  // inferencia se habilita recién cuando el pairing conecta (status → 'active').
   const PROMPT_THROTTLE_MS = 60_000; // no reenviar el mismo prompt más seguido que esto
+
+  // Altas cerradas (MEMU_SIGNUPS_ENABLED=0): a un desconocido se le contesta y se corta ahí. No
+  // tiene sentido pedirle los Términos ni mandarle un link de pago si el control-plane va a
+  // rechazar el provision igual — peor: le cobraríamos por algo que no se puede vincular.
+  const SIGNUPS_ENABLED = process.env.MEMU_SIGNUPS_ENABLED !== "0";
+  const SIGNUPS_CLOSED_MSG = "¡Hola! 👋 Por ahora Memu no está tomando usuarios nuevos. Gracias por pasar 🙏";
 
   // Gate de consentimiento: antes de mandar el link de pago, el usuario nuevo tiene que aceptar los
   // Términos + Privacidad, y queda registrado (append-only). Devuelve true si el consentimiento ya
@@ -324,6 +330,17 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
 
   const onboard = async (phone: string, chatJid: string, text: string): Promise<void> => {
     const user = registry.getUserByPhone(phone);
+
+    // Desconocido + altas cerradas → una respuesta clara (throttleada) y nada más.
+    if (!user && !SIGNUPS_ENABLED) {
+      const last = paymentPromptAt.get(phone) ?? 0;
+      if (Date.now() - last < PROMPT_THROTTLE_MS) return;
+      paymentPromptAt.set(phone, Date.now());
+      await sendBot(chatJid, SIGNUPS_CLOSED_MSG);
+      console.log(dim(`[bot] alta rechazada — altas cerradas (${phone})`));
+      return;
+    }
+
     // Consentimiento primero (queda registrado). Si todavía no aceptó, cortamos acá: no mostramos el
     // link de pago ni disparamos el pairing hasta tener el OK a los Términos + Privacidad. Los que ya
     // pasaron por Stripe (stripeCustomerId) no se re-preguntan: un past_due que arregla la tarjeta no

@@ -23,6 +23,11 @@ const PORT = Number(process.env.CONTROL_PLANE_PORT ?? 8788);
 const TOKEN = process.env.CONTROL_PLANE_TOKEN ?? "";
 const WACLI_BIN = process.env.WACLI_BIN ?? "wacli";
 const DEVICE_LABEL = process.env.WACLI_DEVICE_LABEL ?? "Memu";
+// MEMU_SIGNUPS_ENABLED=0 cierra el alta de usuarios NUEVOS. El gate mira el REGISTRO, no el
+// endpoint: los usuarios que ya existen siguen pudiendo pasar por /provision, que es el mismo
+// camino por el que se recupera un companion deslinkeado. Apagar el proceso entero cerraría las
+// altas, sí, pero también dejaría a los usuarios actuales sin forma de volver a vincularse.
+const SIGNUPS_ENABLED = process.env.MEMU_SIGNUPS_ENABLED !== "0";
 const ENROLL_WAIT_MS = Number(process.env.CP_ENROLL_WAIT_MS ?? 240_000); // espera a que ingrese el código
 const BOOTSTRAP_MS = Number(process.env.CP_BOOTSTRAP_MS ?? 120_000); // margen tras conectar (backfill)
 
@@ -146,6 +151,10 @@ const server = createServer((req, res) => {
 
       // Dedup por teléfono (ya normalizado a E.164). Si ya está activo, no re-pareamos.
       const existing = registry.getUserByPhone(phone);
+      if (!existing && !SIGNUPS_ENABLED) {
+        console.log(dim(`[cp] provision RECHAZADO — altas cerradas (phone=${phone})`));
+        return send(res, 403, { error: "signups-closed", message: "Memu no está aceptando usuarios nuevos." });
+      }
       const userId = existing ? existing.id : registry.addUser(phone, { status: "pending" }).id;
       if (existing?.status === "active") return send(res, 200, { userId, status: "connected" });
       // Idempotente: si ya hay un pairing en curso, NO spawneamos otro wacli (evita doble-pairing /
@@ -187,6 +196,12 @@ const server = createServer((req, res) => {
       const phone = body.phone ? normalizePhone(String(body.phone)) : null;
 
       let user = phone ? registry.getUserByPhone(phone) : customerId ? registry.getUserByStripeCustomer(customerId) : null;
+      // Con las altas cerradas NO hay signup implícito: un checkout de alguien desconocido no puede
+      // crear el usuario por la puerta de atrás. Se responde 403 para que quede en los logs de Stripe.
+      if (!user && phone && !SIGNUPS_ENABLED) {
+        console.log(dim(`[cp] billing RECHAZADO — altas cerradas (phone=${phone})`));
+        return send(res, 403, { error: "signups-closed" });
+      }
       if (!user && phone) user = registry.addUser(phone, { status: "pending" }); // signup implícito al pagar
       if (!user) return send(res, 404, { error: "usuario no encontrado (falta phone o customer conocido)" });
 
@@ -218,5 +233,8 @@ if (!TOKEN) {
   process.exit(1);
 }
 server.listen(PORT, HOST, () => {
-  console.log(`control-plane escuchando en ${HOST}:${PORT} (bearer token requerido)`);
+  console.log(
+    `control-plane escuchando en ${HOST}:${PORT} (bearer token requerido) · altas ` +
+      (SIGNUPS_ENABLED ? "ABIERTAS" : "CERRADAS (MEMU_SIGNUPS_ENABLED=0)"),
+  );
 });

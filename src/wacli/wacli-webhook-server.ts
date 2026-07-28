@@ -7,7 +7,7 @@
 // Bindea a 127.0.0.1: wacli corre en la misma box, así que loopback alcanza y mantiene el
 // webhook fuera de cualquier interfaz externa (wacli pide `--webhook-allow-private` para
 // aceptar una URL loopback — lo agrega el spawn del follow).
-// Portado de proyecto-interno/packages/channels/src/wacli-webhook-server.ts (sin cambios).
+// Portado de otro proyecto interno con el mismo canal de WhatsApp (sin cambios).
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";

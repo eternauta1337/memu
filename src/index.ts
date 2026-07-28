@@ -68,7 +68,7 @@ async function main(): Promise<void> {
       void alerter.alert(
         "deslink-central",
         "Memu: el NÚMERO CENTRAL quedó desvinculado/baneado — nadie puede chatear con el bot. " +
-          "Recuperación: re-parear el central y reiniciar memu-ingest (runbook: <doc interno>).",
+          "Recuperación: re-parear el central y reiniciar memu-ingest.",
       ),
   });
   centralBot.startFollow();
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
     const who = `u${id}${u?.phone ? ` (+${u.phone})` : ""}`;
     void alerter.alert(
       `deslink-u${id}`,
-      `Memu: se desvinculó el companion de ${who} — su ingesta está parada. Le mandé instrucciones + código de re-pairing. Si no vuelve solo: runbook (<doc interno>).`,
+      `Memu: se desvinculó el companion de ${who} — su ingesta está parada. Le mandé instrucciones + código de re-pairing.`,
     );
     registry.setStatus(id, "pending");
     const rt = runtimes.get(String(id));
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
     for (const req of registry.unnotifiedDeletionRequests()) {
       void alerter.alert(
         `del-req-${req.id}`,
-        `Memu: pedido de BORRADO de datos de +${req.phone} (origen: ${req.source}). Hay 48h de plazo — correr: pnpm delete-user --phone ${req.phone} (runbook: <doc interno>).`,
+        `Memu: pedido de BORRADO de datos de +${req.phone} (origen: ${req.source}). Hay 48h de plazo — correr: pnpm delete-user --phone ${req.phone}.`,
       );
       registry.markDeletionNotified(req.id);
     }
@@ -242,6 +242,9 @@ async function main(): Promise<void> {
   // (memu-backup.timer, diario 03:30) y el offsite al host-offsite (timer horario oportunista: el host-offsite es
   // laptop y puede no estar). Local >26 h = el backup está roto. Offsite >4 días = el host-offsite no
   // aparece en el tailnet. El throttle del alerter (6 h) evita spam.
+  // MEMU_BACKUP_ALERTS=0 apaga el watchdog entero (para instalaciones sin backups configurados:
+  // sin stamp, la staleness es infinita y esto alertaría cada 6 h para siempre).
+  const BACKUP_ALERTS = process.env.MEMU_BACKUP_ALERTS !== "0";
   const BACKUP_STAMP = process.env.MEMU_BACKUP_STAMP ?? "./data/backup-stamp";
   const stampAgeMs = (path: string): number => {
     try {
@@ -264,8 +267,12 @@ async function main(): Promise<void> {
       );
     }
   };
-  const backupTimer = setInterval(backupCheck, 3600_000);
-  backupTimer.unref();
+  if (BACKUP_ALERTS) {
+    const backupTimer = setInterval(backupCheck, 3600_000);
+    backupTimer.unref();
+  } else {
+    console.log(dim("[backup] watchdog apagado (MEMU_BACKUP_ALERTS=0)"));
+  }
   // Reconcile periódico: llena huecos de follows. No evicta.
   const reconcileTimer = setInterval(() => pool.reconcile(), 60_000);
   reconcileTimer.unref();

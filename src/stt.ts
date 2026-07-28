@@ -1,7 +1,7 @@
 // Speech-to-text vía el server Speaches (faster-whisper large-v3-turbo) en GPU. Endpoint
 // OpenAI-compat POST /v1/audio/transcriptions (multipart). Antes: whisper-small in-process
 // (Transformers.js/ONNX, CPU); se movió a la GPU para sacar RAM del proceso node y escalar a
-// multi-usuario (ver <doc interno> §Escalado).
+// multi-usuario.
 //
 // Speaches decodifica el audio solo (opus/oga/m4a/…), así que mandamos el archivo tal cual —
 // no hace falta pre-decodificar a PCM con ffmpeg como antes.

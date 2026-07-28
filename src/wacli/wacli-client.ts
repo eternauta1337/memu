@@ -2,7 +2,7 @@
 // (`send text|voice|file|react`, `auth status`) contra el `--store` y parsea el envelope
 // JSON `{success,data,error}`. Es la parte de SALIDA; la entrada llega por el webhook de
 // `wacli sync --follow` (ver wacli-webhook-server.ts).
-// Portado de proyecto-interno/packages/channels/src/wacli-client.ts (sin cambios).
+// Portado de otro proyecto interno con el mismo canal de WhatsApp (sin cambios).
 //
 // Convive con el `sync --follow` sin pisarlo: wacli ≥0.11 detecta que el store está lockeado
 // por el follow y DELEGA el envío al proceso del follow por IPC (`<store>/.send.sock`), que lo

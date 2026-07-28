@@ -1,8 +1,7 @@
 // Cap de media por usuario: acota el tamaño de su carpeta de media (data/users/<id>/wacli/media)
 // borrando los archivos MÁS VIEJOS (por mtime) hasta bajar del cap. Solo se van los blobs — los
 // mensajes quedan en la DB; media.ts ya maneja el archivo faltante (existsSync → null), así que
-// STT/retrieval lo saltan sin romperse. Sin esto, 500 usuarios × media ilimitada = 1 TB+ (ver
-// <doc interno> §Escalado / §Retención).
+// STT/retrieval lo saltan sin romperse. Sin esto, 500 usuarios × media ilimitada = 1 TB+.
 //
 // Poda con "low-water mark" (default 90% del cap) para no podar en cada pasada rozando el borde.
 // No toca `local_path` en wacli.db (fuente de terceros); el existsSync de media.ts es la red.

@@ -1,4 +1,4 @@
-// Bot central de Memu: la conexión ÚNICA (número dedicado, ex-Proyecto-interno) por donde la gente conversa
+// Bot central de Memu: la conexión ÚNICA (un número dedicado) por donde la gente conversa
 // con Memu — reemplaza el self-chat. Recibe DMs, identifica al usuario por su TELÉFONO (remitente),
 // corre su agente sobre SU memoria (su memu.db, alimentado por su companion link), y responde
 // desde el número central. Los runtimes por-usuario siguen LEYENDO los chats de cada uno (el
@@ -31,7 +31,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const isAudioType = (t?: string): boolean => t === "audio" || t === "ptt";
 const phoneOf = (jid: string): string => stripDeviceSuffix(jid).split("@")[0]!.replace(/\D/g, "");
 
-// Onboarding in-chat. Ver <doc interno>.
+// Onboarding in-chat.
 const pairingMsg = (code: string): string =>
   "¡Listo el pago! 🎉 Ahora conectá tu WhatsApp:\n\n" +
   "1) Abrí WhatsApp → *Ajustes → Dispositivos vinculados*\n" +
@@ -64,7 +64,7 @@ const paymentMsg = (phone: string): string => {
 };
 // Aviso de suscripción vencida (past_due): el link del portal se appendea aparte (para arreglar la
 // tarjeta). Para usuarios activos que quieren gestionar/cancelar, eso lo maneja el AGENTE con la tool
-// `gestionar_suscripcion` (tools.ts) — sin palabras clave. Ver <doc interno>.
+// `gestionar_suscripcion` (tools.ts) — sin palabras clave.
 const PAST_DUE_MSG =
   "Tu suscripción a Memu está vencida 😕 Suele ser un problema con la tarjeta. La actualizás o revisás tu plan acá:";
 
@@ -536,7 +536,7 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   const handleDeslink = (): void => {
     if (deslinked || closing) return;
     deslinked = true;
-    console.error("[bot] 🚨 el número central quedó DESVINCULADO (¿ban?). No reintento el follow — ver runbook (<doc interno>).");
+    console.error("[bot] 🚨 el número central quedó DESVINCULADO (¿ban?). No reintento el follow.");
     onDeslink?.();
   };
   const watchdog = async (): Promise<void> => {

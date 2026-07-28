@@ -4,88 +4,104 @@ Asistente de WhatsApp — un "segundo cerebro" que vive pineado en el self-chat 
 contigo mismo") del usuario: sabe los pendientes, a quién responder, sugiere respuestas (sin
 responder por vos) y permite conversar al final del día sobre lo que pasó.
 
-Plan y arquitectura completos: **`<doc interno>`**.
-(`nombre-interno` es el nombre interno del proyecto; el producto se llama **Memu**.)
+## Cómo funciona
 
-## Estado: Fase 0 — validar la ingesta
+Memu se linkea al WhatsApp del usuario como **companion device** (vía [`wacli`](https://wacli.sh),
+que envuelve whatsmeow). Desde ahí ingiere DMs, grupos y self-chat a SQLite, los indexa con
+embeddings y responde en el self-chat.
 
-Objetivo: confirmar que podemos linkear el WhatsApp propio como *companion device*, ingerir
-todo (DMs, **grupos** y self-chat) a SQLite, y postear en el self-chat. Esto de-riskea el
-punto crítico (factibilidad + riesgo de ban) antes de construir nada más.
+Hay dos canales:
 
-### Requisitos
+- **Companion por usuario** — lee los chats de esa persona y escribe *solo* en su self-chat.
+  Nunca responde a terceros.
+- **Bot central** — un número dedicado por donde la gente hace onboarding, paga y consulta.
+  Es el único que habla con desconocidos.
 
-- **Node 22** (ya en host-backend).
-- **pnpm** — en host-backend está en `~/.local/node/bin` (no en PATH). Prependé:
-  `export PATH="/home/usuario/.hermes/node/bin:$PATH"`
-- **wacli** — ya instalado en `~/.local/bin/wacli` (v0.11.1, `steipete/wacli`).
+El backend es un orquestador multi-tenant: un proceso, un runtime aislado por usuario
+(`data/users/<id>/`, con su propia DB y su propio store de wacli), y un pool que decide qué
+usuarios tienen `follow` activo.
 
-### Runbook
+### Dependencias de inferencia
+
+Memu no trae modelos: consume cuatro servicios por HTTP, todos configurables por env.
+
+| Pieza | Qué espera | Env |
+|---|---|---|
+| LLM | endpoint OpenAI-compatible (`/chat/completions`) con tool calling | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` |
+| Embeddings | [TEI](https://github.com/huggingface/text-embeddings-inference), endpoint nativo `/embed`, 768-dim | `EMBED_URL` |
+| STT | OpenAI-compatible `/v1/audio/transcriptions` (ej. faster-whisper) | `STT_URL`, `STT_MODEL` |
+| TTS | [Inworld](https://inworld.ai) (API paga) | `INWORLD_API_KEY`, `INWORLD_VOICE_DEFAULT` |
+
+Pueden vivir en la misma máquina o en otra alcanzable por red privada; los tres primeros
+suelen querer GPU.
+
+## Requisitos
+
+- **Node 22** y **pnpm**
+- **wacli** ≥ 0.11 en el `PATH` (o `WACLI_BIN` apuntándolo)
+- Los servicios de inferencia de arriba
+
+## Puesta en marcha
 
 ```bash
-cd ~/memu
-export PATH="/home/usuario/.hermes/node/bin:$PATH"   # pnpm
-pnpm install                                      # instala deps (better-sqlite3, tsx)
-cp .env.example .env                              # ajustá si querés
+pnpm install
+cp .env.example .env      # completá LLM_*, EMBED_URL, STT_URL, INWORLD_*
 
-# 1) Parear (interactivo, escaneás un QR). Correr en una terminal REAL:
-pnpm pair
-#    WhatsApp del celu → Ajustes → Dispositivos vinculados → Vincular un dispositivo → escaneá.
+# Alta del primer usuario: lo registra y lo parea por código
+pnpm add-user --phone +59899XXXXXXX
 
-# 2) Ingerir en vivo (Ctrl-C corta). Vas a ver DMs, grupos y self-chat caer a la DB:
+# Orquestador (ingesta + bot central + loop de respuesta). Ctrl-C corta.
 pnpm ingest
-
-# 3) (otra terminal) Smoke test: postear en tu propio self-chat:
-pnpm send-self "hola desde Memu"
 ```
 
-> ⚠️ El pairing linkea Memu a **tu número personal** de WhatsApp. Es la apuesta del producto:
-> el riesgo de ban recae sobre ese número. El diseño (lee mucho, escribe solo al self-chat,
-> nunca a terceros) es el patrón de menor riesgo, pero no es cero. Para Fase 0 conviene usar
-> un número de prueba si tenés uno.
+Para parear por QR en vez de código: `pnpm pair`.
 
-### Verificar lo ingerido
+> ⚠️ El pairing linkea Memu al **número personal** del usuario, así que el riesgo de ban
+> recae sobre ese número. El diseño (lee mucho, escribe solo al self-chat, nunca a terceros)
+> es el patrón de menor riesgo, pero no es cero.
+
+### Verificar
 
 ```bash
-sqlite3 data/users/self/memu.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kind;"
-sqlite3 data/users/self/memu.db "SELECT ts, chat_kind, push_name, substr(text,1,60) FROM messages ORDER BY ts DESC LIMIT 20;"
+pnpm ask "¿qué tengo pendiente?"    # pregunta puntual por CLI, sin WhatsApp
+sqlite3 data/users/1/memu.db "SELECT chat_kind, count(*) FROM messages GROUP BY chat_kind;"
 ```
 
-## Fase 1 (en curso)
+## Scripts
 
-Con la ingesta andando, el cerebro sobre gemma local (host-backend):
-
-```bash
-pnpm import-history                       # vuelca el histórico de wacli.db a la DB de Memu
-pnpm ask "¿qué tengo pendiente?"          # pregunta puntual (CLI, sin WhatsApp)
-```
-
-Y el **loop del self-chat**: cuando corrés `pnpm ingest`, además de ingerir, **Memu responde
-en tu self-chat**. Escribí en "Mensajes contigo mismo" (ej. "¿a quién le debo respuesta?") y
-te contesta ahí. (Necesita `.env` con `LLM_*` — ver `.env.example`.)
+| Comando | Qué hace |
+|---|---|
+| `pnpm ingest` | orquestador multi-tenant (el proceso principal) |
+| `pnpm control-plane` | HTTP con bearer token para que la web provisione y paree usuarios |
+| `pnpm add-user` / `pnpm delete-user` | alta y baja (la baja borra datos y deja constancia) |
+| `pnpm pair` | pairing interactivo por QR |
+| `pnpm ask "…"` | consultar el cerebro desde la terminal |
+| `pnpm rem` | corrida de detección de compromisos (tareas propuestas, nunca auto-insertadas) |
+| `pnpm digest` | resumen del día |
+| `pnpm import-history` | vuelca el histórico de `wacli.db` a la DB de Memu |
+| `pnpm embed` | indexa embeddings pendientes |
 
 ## Estructura
 
 ```
 src/
-  wacli/
-    wacli-webhook-types.ts   # tipos del payload de wacli + helpers de JID (portado de Proyecto-interno)
-    wacli-webhook-server.ts  # server HTTP loopback HMAC que recibe de `wacli sync` (portado)
-    wacli-client.ts          # cliente del binario wacli: send/auth (portado)
-  ingest.ts                  # normaliza mensaje → MemuMessage (CONSERVA grupos + self)
-  store.ts                   # SQLite (better-sqlite3, WAL): tabla `messages`
-  import-history.ts          # importa el histórico (backfill) desde wacli.db
-  llm.ts                     # cliente del LLM local (gemma4-31b vía LiteLLM, OpenAI-compat)
-  agent.ts                   # cerebro: recupera contexto + pregunta a gemma (RAG-lite)
-  ask.ts                     # CLI: `pnpm ask "…"`
-  index.ts                   # runner: ingesta + loop del self-chat (responde en el self-chat)
-  pair.ts                    # `wacli auth` interactivo (QR)
-  send-self.ts               # smoke test: postear al self-chat
-  env.ts                     # carga .env
+  index.ts          # orquestador: webhook compartido, runtimes, pool de follows, watchdogs
+  user-runtime.ts   # todo lo de UN usuario: ingesta, answer loop, sweeps
+  central-bot.ts    # bot del número central: onboarding, suscripción, ruteo por remitente
+  control-plane.ts  # HTTP de aprovisionamiento/pairing (lo llama la web, server-side)
+  registry.ts       # registro central de usuarios (estado, suscripción, bajas)
+  store.ts          # SQLite por usuario (better-sqlite3 + sqlite-vec, WAL)
+  agent.ts tools.ts # cerebro: loop de agente con herramientas
+  retrieval.ts      # recuperación híbrida (FTS + vectores) sobre los mensajes
+  tasks.ts rem.ts   # tareas y detección nocturna de compromisos
+  llm.ts embeddings.ts stt.ts tts.ts   # clientes de los servicios de inferencia
+  wacli/            # cliente del binario wacli + webhook server
 ```
 
-## Diferencias con el canal WhatsApp de Proyecto-interno
+## Privacidad
 
-- **Conserva grupos** (Proyecto-interno v1 descarta `@g.us`) — la coordinación en grupos es caso de uso central.
-- **Conserva self-chat, mensajes propios y reacciones** — Fase 0 quiere ver todo; se marcan con flags.
-- **Mono-tenant** y sin dependencias de `@proyecto-interno/*` (agent/store/telegram). Multi-tenant llega en Fase 3.
+Los datos de cada usuario están **físicamente aislados** en `data/users/<id>/`: es imposible
+filtrar entre usuarios por un query mal escrito. El proceso corre con `UMask=0077` y todo lo
+que crea nace 600/700. Por default el journal **no** loguea contenido de mensajes, solo
+metadata (`MEMU_LOG_CONTENT=1` lo prende, solo para debug). Los chats archivados no se
+ingieren ni se indexan.

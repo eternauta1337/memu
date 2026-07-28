@@ -1,7 +1,6 @@
 // Pool de follows: acota los `wacli sync --follow` concurrentes a `cap` y ESCALONA los arranques.
 // Reconectar muchos websockets de golpe es señal anómala para WhatsApp (riesgo de ban / de que
-// invalide los companion devices — ver <doc interno> §Mitigación de ban); el
-// escalonado evita ese thundering-herd al arrancar/reconectar.
+// invalide los companion devices); el escalonado evita ese thundering-herd al arrancar/reconectar.
 //
 // Prioridad por actividad reciente (registry.last_active): si hay más usuarios que `cap`, se
 // siguen los más activos primero. Diseño CONSERVADOR: el reconcile LLENA hasta el cap pero NO

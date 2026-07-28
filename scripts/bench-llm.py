@@ -1,16 +1,23 @@
 # Bench v2: prompts ÚNICOS por request (sin prefix-cache de vLLM) — el caso real de N usuarios
 # DISTINTOS preguntando a la vez. Tamaños: ~6k tok (agente típico) y ~30k tok (estrés). Además
 # muestrea vllm:gpu_cache_usage_perc durante la corrida.
-import json, time, threading, urllib.request, statistics
+import json, os, time, threading, urllib.request, statistics
 
-BASE = "http://127.0.0.1:4000/v1"
-METRICS = "http://10.0.0.10:8000/metrics"
-MODEL = "gemma4-31b"
-KEY = None
-with open("/home/usuario/memu/memu/.env") as f:
-    for line in f:
-        if line.startswith("LLM_API_KEY="):
-            KEY = line.strip().split("=", 1)[1]
+# Config por entorno (o .env del repo). METRICS es opcional: el endpoint /metrics del server de
+# inferencia, para muestrear el uso de KV cache mientras corre el bench.
+BASE = os.environ.get("LLM_BASE_URL", "http://127.0.0.1:4000/v1")
+METRICS = os.environ.get("LLM_METRICS_URL")
+MODEL = os.environ.get("LLM_MODEL", "")
+KEY = os.environ.get("LLM_API_KEY")
+if not KEY or not MODEL:
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    with open(env_path) as f:
+        for line in f:
+            for var, cur in (("LLM_API_KEY", KEY), ("LLM_MODEL", MODEL)):
+                if line.startswith(f"{var}=") and not cur:
+                    val = line.strip().split("=", 1)[1]
+                    KEY = val if var == "LLM_API_KEY" else KEY
+                    MODEL = val if var == "LLM_MODEL" else MODEL
 
 SYSTEM = "Sos Memu, asistente dentro del WhatsApp de la persona. Rioplatense, concreto.\n" + "\n".join(
     f"- Hecho {i}: dato de ejemplo {i}." for i in range(30))
@@ -35,6 +42,8 @@ def payload(tok_target):
             "stream_options": {"include_usage": True}}
 
 def kv_usage():
+    if not METRICS:
+        return None
     try:
         with urllib.request.urlopen(METRICS, timeout=5) as r:
             for line in r.read().decode().splitlines():

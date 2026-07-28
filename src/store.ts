@@ -1,6 +1,6 @@
-// Store SQLite central de Memu (patrón tomado de @proyecto-interno/store: better-sqlite3, WAL, SQL a
-// mano, sin ORM). Fase 0: solo la tabla `messages` (ingesta cruda). Multi-tenant vendrá con
-// una columna `user_id` cuando lleguemos a la Fase 3.
+// Store SQLite de Memu: better-sqlite3, WAL, SQL a mano, sin ORM. Es POR USUARIO — cada uno
+// tiene su propio archivo en data/users/<id>/memu.db (ver users.ts), así que acá no hay ninguna
+// columna `user_id`: el aislamiento es físico, no un WHERE que alguien se puede olvidar.
 
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";

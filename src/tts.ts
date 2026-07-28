@@ -1,13 +1,13 @@
-// Text-to-speech vía Inworld (API HTTP síncrona, base64 in/out) — el mismo provider que usa
-// proyecto-interno. POST /tts/v1/voice con `Authorization: Basic <INWORLD_API_KEY>` (la runtime key ya
-// viene base64, va tal cual). Devuelve OGG/Opus 48kHz, que es justo la nota de voz de wacli,
-// así que no hace falta transcodear un solo chunk. Cuesta plata (INWORLD_API_KEY).
+// Text-to-speech vía Inworld (API HTTP síncrona, base64 in/out). POST /tts/v1/voice con
+// `Authorization: Basic <INWORLD_API_KEY>` (la runtime key ya viene base64, va tal cual).
+// Devuelve OGG/Opus 48kHz, que es justo la nota de voz de wacli, así que no hace falta
+// transcodear un solo chunk. Cuesta plata (INWORLD_API_KEY).
 //
-// La voz default es `<voice-id>` (la voz, clon con acento rioplatense del
-// workspace de la key). Si se rota la key a otro workspace, hay que re-clonar y actualizar.
+// La voz (INWORLD_VOICE_DEFAULT) es un id del workspace al que pertenece la key: si se rota la
+// key a otro workspace, hay que actualizarla. No hay default posible — depende de la cuenta.
 //
-// Antes usábamos Piper (local, $0) pero se cambió a Inworld por calidad. El caller (index.ts)
-// ya cae a texto si synthesize() tira, así que un fallo de red/API no deja sin respuesta.
+// El caller (index.ts) cae a texto si synthesize() tira, así que un fallo de red/API o una
+// config incompleta no dejan al usuario sin respuesta.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -17,7 +17,7 @@ import { join } from "node:path";
 const BASE_URL = process.env.INWORLD_BASE_URL ?? "https://api.inworld.ai";
 const API_KEY = process.env.INWORLD_API_KEY ?? "";
 const TTS_MODEL = process.env.INWORLD_TTS_MODEL ?? "inworld-tts-1.5-max";
-const VOICE = process.env.INWORLD_VOICE_DEFAULT ?? "<voice-id>";
+const VOICE = process.env.INWORLD_VOICE_DEFAULT ?? "";
 // Ritmo: Inworld acepta speakingRate 0.5–1.5 (1.0 = normal). Default 0.9 = un toque pausado,
 // honrando el preset "calmado" que el usuario venía usando con Piper. Env-configurable.
 const SPEAKING_RATE = clampRate(Number(process.env.INWORLD_SPEAKING_RATE ?? "0.9"));
@@ -115,6 +115,7 @@ function concatOgg(parts: Buffer[], outPath: string): Promise<void> {
  *  escribe directo; multi-chunk se concatena con ffmpeg. */
 export async function synthesize(text: string, outPath: string): Promise<string> {
   if (!API_KEY) throw new Error("TTS no configurado: falta INWORLD_API_KEY");
+  if (!VOICE) throw new Error("TTS no configurado: falta INWORLD_VOICE_DEFAULT (id de voz del workspace)");
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) throw new Error("nada que sintetizar (texto vacío)");
 

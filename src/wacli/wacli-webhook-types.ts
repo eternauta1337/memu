@@ -2,7 +2,7 @@
 // Espeja el struct Go `wa.ParsedMessage` (github.com/steipete/wacli). Los nombres son
 // PascalCase porque Go marshalea sin struct tags. Los opcionales pueden venir como ""
 // o null (zero-value de Go) → los tratamos tolerantes.
-// Portado de proyecto-interno/packages/channels/src/wacli-webhook-types.ts (sin cambios).
+// Portado de otro proyecto interno con el mismo canal de WhatsApp (sin cambios).
 
 export interface WacliWebhookMessage {
   /** JID del chat (DM o grupo). Puede venir como objeto {User,Server,…} o string. */

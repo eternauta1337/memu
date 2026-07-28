@@ -1,6 +1,6 @@
-// Cliente mínimo del LLM local (gemma4-31b vía LiteLLM, endpoint OpenAI-compatible en host-backend).
-// Usamos fetch directo: es una sola llamada `chat/completions`, no hace falta el SDK de OpenAI.
-// NB: esto NO es Anthropic — es el modelo local; por eso el shape OpenAI y no el SDK de Claude.
+// Cliente mínimo del LLM: cualquier endpoint OpenAI-compatible con tool calling (LLM_BASE_URL),
+// sea un gateway delante de un modelo local o un proveedor hosted. Usamos fetch directo: es una
+// sola llamada `chat/completions`, no hace falta el SDK de OpenAI.
 
 export interface ToolCall {
   id: string;

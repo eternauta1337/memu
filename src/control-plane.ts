@@ -1,14 +1,14 @@
-// Control-plane HTTP — el puente entre la web pública (host-web, en ejemplo.com) y el backend de Memu
-// (host-backend, donde viven wacli + registry + stores + GPU). host-web NO puede parear WhatsApp (es
-// serverless-ish y no tiene el store ni corre el follow); llama acá server-side, por Tailscale,
-// con un bearer token. Este proceso aprovisiona usuarios nuevos y los parea por pairing-code
-// (`wacli auth --phone --events`, mismo patrón que el enrollment de proyecto-interno).
+// Control-plane HTTP — el puente entre la web pública (el front de signup) y el backend de Memu,
+// donde viven wacli, el registro y los stores. La web no puede parear WhatsApp por su cuenta (no
+// tiene el store ni corre el follow): llama acá server-side, con un bearer token. Este proceso
+// aprovisiona usuarios nuevos y los parea por pairing-code (`wacli auth --phone --events`).
 //
-// SEGURIDAD: no se expone a internet. Bindear a la interfaz Tailscale (CONTROL_PLANE_HOST) o a
-// 0.0.0.0 con el bearer token SIEMPRE obligatorio. El token es el único gate a "crear usuario +
-// parear WhatsApp", así que va fuerte y secreto (CONTROL_PLANE_TOKEN).
+// SEGURIDAD: no se expone a internet. Bindear a loopback si la web corre en la misma máquina, o
+// a una interfaz de red privada si no (CONTROL_PLANE_HOST), con el bearer token SIEMPRE
+// obligatorio. El token es el único gate a "crear usuario + parear WhatsApp", así que va fuerte
+// y secreto (CONTROL_PLANE_TOKEN).
 //
-// Correr en host-backend: `pnpm control-plane`.
+// Correr: `pnpm control-plane`.
 
 import "./env.ts";
 import { spawn, type ChildProcess } from "node:child_process";

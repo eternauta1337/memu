@@ -1,9 +1,9 @@
-// Embeddings vía TEI (text-embeddings-inference, GPU) — endpoint nativo `/embed`
-// (NO es OpenAI-compat). Modelo: `Alibaba-NLP/gte-multilingual-base` (768-dim, normalizado,
-// contexto 8192, SIN prefijos query/passage — gte no los usa). Antes: model server del stack
-// docker de Onyx (mismo modelo, endpoint `/encoder/bi-encoder-embed`); cuando ese stack se
-// bajó quedó el contenedor standalone `memu-embed` publicado en 127.0.0.1:9000. Los vectores
-// ya indexados siguen válidos: es el mismo modelo.
+// Embeddings vía TEI (text-embeddings-inference) — endpoint nativo `/embed` (NO es
+// OpenAI-compat). Modelo: `Alibaba-NLP/gte-multilingual-base` (768-dim, normalizado,
+// contexto 8192, SIN prefijos query/passage — gte no los usa).
+//
+// Cambiar de modelo invalida TODO lo ya indexado (otra dimensión, otro espacio vectorial):
+// hay que re-embeber. Mantener EMBED_DIM en sync con VEC_DIM de store.ts.
 
 const EMBED_URL = process.env.EMBED_URL ?? "http://127.0.0.1:9000/embed";
 const EMBED_TIMEOUT_MS = Number(process.env.EMBED_TIMEOUT_MS ?? 60_000);

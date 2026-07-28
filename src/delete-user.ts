@@ -1,7 +1,7 @@
 // Borrado TOTAL de los datos de un usuario — la implementación de la promesa de la privacy
 // policy §6 ("podés borrar tus datos cuando quieras" / baja al cancelar). Los pedidos los
 // registra la tool `solicitar_borrado_datos` del agente o el sweep de cancelaciones (index.ts);
-// el admin los ejecuta con esto. Runbook: <doc interno>.
+// el admin los ejecuta con esto.
 //
 //   pnpm delete-user --phone 598…     (o --id N)   → dry-run: muestra qué se borraría
 //   pnpm delete-user --phone 598… --yes            → borra en serio

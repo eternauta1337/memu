@@ -1,6 +1,6 @@
 // Normaliza un mensaje crudo de wacli a la forma que Memu guarda.
 //
-// DIFERENCIA CLAVE con el canal de Proyecto-interno (que descarta grupos, ecos y reacciones): Memu
+// A diferencia de un bot de WhatsApp común (que descarta grupos, ecos y reacciones), Memu
 // necesita VER todo. Conservamos grupos, self-chat, mensajes propios (fromMe) y reacciones;
 // solo los clasificamos y marcamos con flags. Filtrar/decidir es responsabilidad de capas
 // posteriores (indexador, agente), no de la ingesta.

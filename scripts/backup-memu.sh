@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # Backup cifrado de data/ con restic. Uso: backup-memu.sh [local|offsite]
 #
-#   local   → repo en /mnt/backups (segundo disco de host-backend). memu-backup.timer, diario 03:30
-#             America/Montevideo (= 06:30 UTC, UY no tiene DST). Escribe data/backup-stamp.
-#   offsite → repo en el host-offsite (laptop) vía SFTP/Tailscale. Como el host-offsite se duerme/se va, el
-#             timer (memu-backup-offsite.timer) intenta CADA HORA: si ya hubo un backup en
-#             las últimas 20 h no hace nada, si el host-offsite no responde sale en silencio (se
-#             reintenta en 1 h). Escribe data/backup-stamp-offsite cuando logra uno.
+#   local   → repo en otro disco de la misma máquina (MEMU_BACKUP_REPO_LOCAL). Pensado para un
+#             timer diario. Escribe data/backup-stamp.
+#   offsite → repo remoto (MEMU_BACKUP_REPO_OFFSITE, ej. `sftp:host:ruta`). Pensado para un
+#             timer horario OPORTUNISTA, para destinos que no siempre están online (una laptop):
+#             si ya hubo un backup en las últimas 20 h no hace nada, y si el host no responde
+#             sale en silencio y reintenta. Escribe data/backup-stamp-offsite cuando logra uno.
 #
 # index.ts vigila ambos stamps y alerta por WhatsApp: local >26 h = el backup está roto;
-# offsite >4 días = el host-offsite no aparece en el tailnet — prendelo un rato.
+# offsite >4 días = el destino remoto no aparece hace demasiado.
 #
-# El cifrado es del lado de host-backend (el destino solo ve blobs). Los sqlite (memu.db, registry,
+# El cifrado es del lado del origen (el destino solo ve blobs). Los sqlite (memu.db, registry,
 # wacli.db, session.db) NO se copian en caliente: se sacan con `sqlite3 .backup` (consistente
 # aun con el servicio escribiendo) a un stage que replica las rutas relativas. En el snapshot:
 #   data/…   → todo menos *.db*, LOCK, HEARTBEAT (media incluida)
 #   stage/…  → los .db consistentes, mismas rutas relativas que en data/
 # RESTORE: restic restore <snap> --target /tmp/r && copiar /tmp/r/…/stage/X.db sobre data/X.db.
 #
-# La clave vive en ~/.config/memu/restic-pass (600). ⚠️ Guardala TAMBIÉN fuera de host-backend
-# (1Password): si se muere el disco, sin esa clave los backups no sirven de nada.
+# La clave vive en ~/.config/memu/restic-pass (600), override con RESTIC_PASSWORD_FILE.
+# ⚠️ Guardala TAMBIÉN fuera de la máquina (gestor de contraseñas): si se muere el disco, sin
+# esa clave los backups no sirven de nada.
 #
 # Retención corta a propósito (7 diarios + 4 semanales ≈ 30 días): la privacy policy promete
 # borrado — un usuario borrado desaparece también de los backups en ≤ ~35 días.
@@ -30,25 +31,31 @@ MODE="${1:-local}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA="$REPO_ROOT/data"
 STAGE="$HOME/.cache/memu-backup-stage-$MODE"
-export RESTIC_PASSWORD_FILE="$HOME/.config/memu/restic-pass"
+export RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-$HOME/.config/memu/restic-pass}"
+
+# Destinos (por entorno — no hay defaults razonables, dependen de la instalación):
+#   MEMU_BACKUP_REPO_LOCAL    ruta del repo restic en disco       ej. /mnt/backups/memu-restic
+#   MEMU_BACKUP_REPO_OFFSITE  repo remoto                         ej. sftp:mihost:backups/memu
+#   MEMU_BACKUP_OFFSITE_HOST  host ssh a probar antes del offsite ej. mihost  (opcional)
 
 log() { echo "[backup:$MODE] $*"; }
 
 case "$MODE" in
   local)
-    REPO="/mnt/backups/backups/memu-restic"
+    REPO="${MEMU_BACKUP_REPO_LOCAL:?falta MEMU_BACKUP_REPO_LOCAL (ruta del repo restic)}"
     STAMP="$DATA/backup-stamp"
     ;;
   offsite)
-    REPO="sftp:host-offsite:backups/memu-restic"
+    REPO="${MEMU_BACKUP_REPO_OFFSITE:?falta MEMU_BACKUP_REPO_OFFSITE (repo remoto de restic)}"
     STAMP="$DATA/backup-stamp-offsite"
-    # ¿Ya hubo un backup al host-offsite en las últimas 20 h? → nada que hacer hasta mañana.
+    # ¿Ya hubo un backup offsite en las últimas 20 h? → nada que hacer hasta mañana.
     if [ -f "$STAMP" ] && [ "$(( $(date +%s) - $(stat -c %Y "$STAMP") ))" -lt $((20 * 3600)) ]; then
       exit 0
     fi
-    # ¿El host-offsite está despierto en el tailnet? Si no, salir en silencio — se reintenta en 1 h.
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=6 host-offsite true 2>/dev/null; then
-      log "host-offsite no responde — reintento en la próxima corrida"
+    # ¿El destino está online? Si no, salir en silencio — se reintenta en la próxima corrida.
+    if [ -n "${MEMU_BACKUP_OFFSITE_HOST:-}" ] &&
+       ! ssh -o BatchMode=yes -o ConnectTimeout=6 "$MEMU_BACKUP_OFFSITE_HOST" true 2>/dev/null; then
+      log "$MEMU_BACKUP_OFFSITE_HOST no responde — reintento en la próxima corrida"
       exit 0
     fi
     ;;

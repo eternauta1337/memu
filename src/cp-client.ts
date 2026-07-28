@@ -1,11 +1,11 @@
-// Cliente del control-plane para el bot central. El bot corre en host-backend (misma máquina que el
-// control-plane) y lo llama server-side para: (a) disparar el pairing de un usuario nuevo desde
+// Cliente del control-plane para el bot central. El bot corre en la misma máquina que el
+// control-plane y lo llama server-side para: (a) disparar el pairing de un usuario nuevo desde
 // la conversación de WhatsApp (onboarding in-chat) y (b) consultar el estado/código del pairing.
 // Ver control-plane.ts (el server) y central-bot.ts (el consumidor).
 
 import "./env.ts";
 
-// El control-plane bindea a CONTROL_PLANE_HOST (acá la IP de Tailscale de host-backend, no 0.0.0.0), así
+// El control-plane bindea a CONTROL_PLANE_HOST (una IP de red privada, no 0.0.0.0), así
 // que apuntamos ahí salvo override explícito. Si es 0.0.0.0/vacío, loopback.
 const CP_HOST = process.env.CONTROL_PLANE_HOST;
 const HOST = !CP_HOST || CP_HOST === "0.0.0.0" ? "127.0.0.1" : CP_HOST;

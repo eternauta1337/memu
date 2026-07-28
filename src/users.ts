@@ -1,11 +1,10 @@
 // Resolución de rutas por-usuario. Cada usuario tiene su directorio `data/users/<userId>/`
 // con TODO lo suyo — `memu.db` (datos de Memu) y `wacli/` (store wacli: auth + fuente + media).
-// Aislación FÍSICA (ver <doc interno> §Escalado): imposible filtrar datos entre
-// usuarios por un query mal escrito. El userId es el id (int) del registro central (registry.ts),
-// como string para usarlo de componente de ruta.
+// Aislación FÍSICA: imposible filtrar datos entre usuarios por un query mal escrito. El userId
+// es el id (int) del registro central (registry.ts), como string para usarlo de componente de ruta.
 //
-// Fase 0 = un solo dueño (user 1) → `MEMU_USER_ID`. Multi-tenant (paso 4b): el userId vendrá del
-// ruteo de ingesta (`/wacli/<userId>`).
+// En el orquestador el userId sale del ruteo de ingesta (`/wacli/<userId>`); las CLIs
+// mono-usuario (pair, ask, digest) usan `MEMU_USER_ID`.
 
 import { join } from "node:path";
 

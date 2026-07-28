@@ -13,5 +13,5 @@ export function normalizePhone(input: string): string | null {
   else if (!s.startsWith("+")) s = `+${s}`; // asumimos que tipearon el código de país
   const parsed = parsePhoneNumberFromString(s);
   if (!parsed || !parsed.isValid()) return null;
-  return parsed.number.slice(1); // E.164 sin el '+' (ej. "59899XXXXXXX")
+  return parsed.number.slice(1); // E.164 sin el '+' (ej. "59899123456")
 }

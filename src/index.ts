@@ -239,9 +239,9 @@ async function main(): Promise<void> {
   llmTimer.unref();
 
   // Staleness de backups: scripts/backup-memu.sh escribe un stamp al terminar OK — el local
-  // (memu-backup.timer, diario 03:30) y el offsite al host-offsite (timer horario oportunista: el host-offsite es
-  // laptop y puede no estar). Local >26 h = el backup está roto. Offsite >4 días = el host-offsite no
-  // aparece en el tailnet. El throttle del alerter (6 h) evita spam.
+  // (timer diario) y el offsite (timer horario OPORTUNISTA, porque el destino remoto puede ser
+  // una máquina que no siempre está online). Local >26 h = el backup está roto. Offsite >4 días
+  // = el destino remoto no aparece hace demasiado. El throttle del alerter (6 h) evita spam.
   // MEMU_BACKUP_ALERTS=0 apaga el watchdog entero (para instalaciones sin backups configurados:
   // sin stamp, la staleness es infinita y esto alertaría cada 6 h para siempre).
   const BACKUP_ALERTS = process.env.MEMU_BACKUP_ALERTS !== "0";
@@ -263,7 +263,7 @@ async function main(): Promise<void> {
     if (stampAgeMs(`${BACKUP_STAMP}-offsite`) > 4 * 24 * 3600_000) {
       void alerter.alert(
         "backup-offsite-stale",
-        "Memu: hace más de 4 días que el backup offsite no llega al host-offsite — prendelo un rato en el tailnet (o revisá journalctl -u memu-backup-offsite).",
+        "Memu: hace más de 4 días que el backup offsite no se completa — revisá que el destino remoto esté online (o journalctl -u memu-backup-offsite).",
       );
     }
   };

@@ -93,6 +93,8 @@ Reglas:
   las rechaza, rechazar_sugerencia. NO uses crear_tarea para algo que viene de una sugerencia.
 - Si quiere gestionar su suscripción (cambiar la tarjeta, ver facturas, cancelar o darse de baja),
   usá gestionar_suscripcion y pasale el link TAL CUAL te lo devuelve (no lo acortes ni lo edites).
+- Si pide explícitamente que BORREN TODOS sus datos de Memu, usá solicitar_borrado_datos (avisale
+  antes que es irreversible). Cancelar la suscripción NO es lo mismo que borrar los datos.
 - Citá los chats por su nombre. Sé breve.
 
 AHORA (hora local): ${nowLabel()}`;

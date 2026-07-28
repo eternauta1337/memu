@@ -59,6 +59,21 @@ export interface Registry {
   /** Última aceptación registrada para el teléfono (o null). */
   latestTermsAcceptance(phone: string): { version: string; acceptedAt: string; text: string | null } | null;
 
+  // --- Borrado de datos (promesa de la privacy policy §6). El bot/las cancelaciones REGISTRAN el
+  // pedido; el wipe real lo corre el admin con `pnpm delete-user` (ver delete-user.ts). ---------
+  /** Registra un pedido de borrado (dedup: no crea otro si ya hay uno abierto para el teléfono). */
+  recordDeletionRequest(phone: string, userId: number | null, source: string): void;
+  /** ¿Hay un pedido de borrado abierto (pending/notified) para el teléfono? */
+  hasOpenDeletionRequest(phone: string): boolean;
+  /** Pedidos todavía no avisados al admin (status 'pending'). */
+  unnotifiedDeletionRequests(): Array<{ id: number; phone: string; userId: number | null; source: string }>;
+  /** Marca un pedido como avisado al admin. */
+  markDeletionNotified(id: number): void;
+  /** Cierra todos los pedidos abiertos de un teléfono (los marca 'done'; lo llama delete-user). */
+  resolveDeletionRequests(phone: string): void;
+  /** Borra el teléfono de la fila del usuario (anonimiza; quedan los ids de Stripe para lo contable). */
+  clearPhone(id: number): void;
+
   close(): void;
 }
 
@@ -75,7 +90,7 @@ const rowToUser = (r: Record<string, unknown>): User => ({
 });
 
 export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
-  mkdirSync(dirname(dbPath), { recursive: true });
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 }); // datos de usuarios: solo el dueño
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
@@ -119,6 +134,22 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   // TELÉFONO porque el gate corre en el onboarding, antes de que exista la fila de `users`. Cada
   // fila es un evento: 'prompted' (le mostramos los términos) o 'accepted' (respondió que acepta,
   // con el texto literal). `version` es la fecha de "Última actualización" de la web (ver central-bot.ts).
+  // Pedidos de borrado de datos (privacy policy §6): el bot o una cancelación de Stripe registran
+  // el pedido; un sweep del orquestador alerta al admin ('pending' → 'notified'); `pnpm delete-user`
+  // hace el wipe y los cierra ('done'). Por TELÉFONO (igual que terms_events).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS deletion_requests (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone       TEXT NOT NULL,
+      user_id     INTEGER,
+      source      TEXT NOT NULL,                    -- 'bot' | 'cancelacion' | 'admin'
+      status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'notified' | 'done'
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_deletion_requests_phone ON deletion_requests (phone);
+  `);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS terms_events (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,6 +187,19 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
   const selLatestAcceptance = db.prepare(
     "SELECT version, text, created_at FROM terms_events WHERE phone = ? AND kind = 'accepted' ORDER BY id DESC LIMIT 1",
   );
+
+  const insDeletionReq = db.prepare("INSERT INTO deletion_requests (phone, user_id, source) VALUES (?, ?, ?)");
+  const selOpenDeletionReq = db.prepare(
+    "SELECT 1 FROM deletion_requests WHERE phone = ? AND status IN ('pending','notified') LIMIT 1",
+  );
+  const selUnnotifiedDeletionReqs = db.prepare(
+    "SELECT id, phone, user_id, source FROM deletion_requests WHERE status = 'pending' ORDER BY id ASC",
+  );
+  const updDeletionNotified = db.prepare("UPDATE deletion_requests SET status = 'notified' WHERE id = ?");
+  const updDeletionDone = db.prepare(
+    "UPDATE deletion_requests SET status = 'done', resolved_at = datetime('now') WHERE phone = ? AND status IN ('pending','notified')",
+  );
+  const updClearPhone = db.prepare("UPDATE users SET phone = NULL WHERE id = ?");
 
   return {
     db,
@@ -212,6 +256,31 @@ export function openRegistry(dbPath: string = REGISTRY_DB): Registry {
         | { version: string; text: string | null; created_at: string }
         | undefined;
       return r ? { version: r.version, acceptedAt: r.created_at, text: r.text } : null;
+    },
+    recordDeletionRequest(phone, userId, source) {
+      if (selOpenDeletionReq.get(phone)) return; // ya hay uno abierto → no duplicar
+      insDeletionReq.run(phone, userId, source);
+    },
+    hasOpenDeletionRequest(phone) {
+      return selOpenDeletionReq.get(phone) != null;
+    },
+    unnotifiedDeletionRequests() {
+      const rows = selUnnotifiedDeletionReqs.all() as Array<{
+        id: number;
+        phone: string;
+        user_id: number | null;
+        source: string;
+      }>;
+      return rows.map((r) => ({ id: r.id, phone: r.phone, userId: r.user_id, source: r.source }));
+    },
+    markDeletionNotified(id) {
+      updDeletionNotified.run(id);
+    },
+    resolveDeletionRequests(phone) {
+      updDeletionDone.run(phone);
+    },
+    clearPhone(id) {
+      updClearPhone.run(id);
     },
     close() {
       db.close();

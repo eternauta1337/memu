@@ -233,6 +233,15 @@ export const TOOLS: ToolSpec[] = [
   {
     type: "function",
     function: {
+      name: "solicitar_borrado_datos",
+      description:
+        "Registra el pedido de la persona de BORRAR TODOS sus datos de Memu (memoria, índice y copia de sus chats). Es irreversible y lo procesa el equipo dentro de 48 horas. Usala SOLO si lo pide explícita e inequívocamente ('borrá todos mis datos', 'quiero darme de baja y que borren todo'). Si solo quiere cancelar la suscripción, usá gestionar_suscripcion.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "gestionar_suscripcion",
       description:
         "Devuelve un link al portal de Stripe donde la persona gestiona su suscripción: cambiar la tarjeta, ver facturas, o CANCELAR / darse de baja. Usalo cuando pida gestionar el pago/suscripción, cambiar la tarjeta, ver sus facturas, cancelar o darse de baja.",
@@ -361,6 +370,20 @@ export async function runTool(
         return store.resolveTaskSuggestion(id, "rejected")
           ? `Sugerencia #${id} rechazada (no la vuelvo a proponer).`
           : `No hay sugerencia pendiente #${id}.`;
+      }
+      case "solicitar_borrado_datos": {
+        const reg = getRegistry();
+        const u = reg.getUser(Number(store.userId));
+        if (!u?.phone) return "Error: no encuentro el teléfono de la persona; pedile que escriba a soporte (el mail de la web).";
+        if (reg.hasOpenDeletionRequest(u.phone)) {
+          return "El pedido de borrado YA estaba registrado y sigue en proceso (se completa dentro de 48 h del pedido original). Confirmáselo.";
+        }
+        reg.recordDeletionRequest(u.phone, u.id, "bot");
+        return (
+          "Pedido de borrado REGISTRADO. Confirmale: se borra TODO (memoria, índice y copia de chats) dentro de 48 h, " +
+          "y Memu se desvincula de su WhatsApp. Solo quedan los registros de facturación (Stripe) por obligación contable. " +
+          "Si además tiene suscripción activa, recomendale cancelarla con gestionar_suscripcion (el borrado no la cancela solo)."
+        );
       }
       case "gestionar_suscripcion": {
         const u = getRegistry().getUser(Number(store.userId));

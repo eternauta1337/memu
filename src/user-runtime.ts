@@ -27,6 +27,9 @@ import { WacliClient } from "./wacli/wacli-client.ts";
 import { isBroadcastJid, stripDeviceSuffix, type WacliWebhookMessage } from "./wacli/wacli-webhook-types.ts";
 
 const MEMU_PREFIX = "🤖 "; // marca los mensajes de Memu en el self-chat (todos van a la derecha)
+// Loguear CONTENIDO (texto de mensajes, transcripciones, preguntas) al journal. Default: NO —
+// el journal es root-readable y persiste fuera de data/. Prender solo para debugging puntual.
+const LOG_CONTENT = process.env.MEMU_LOG_CONTENT === "1";
 const MEDIA_CAP_BYTES = Number(process.env.MEMU_MEDIA_CAP_MB ?? 500) * 1024 * 1024; // 0 = sin cap
 const MEDIA_CAP_SWEEP_MS = Number(process.env.MEMU_MEDIA_CAP_SWEEP_MS) || 900_000; // 15 min
 const mb = (b: number): number => Math.round(b / 1024 / 1024);
@@ -51,8 +54,13 @@ export interface UserRuntime {
   ownJid: string | null;
   /** true si el store wacli está autenticado. */
   authenticated: boolean;
+  /** true si `auth status` respondió (si es false, `authenticated` no dice nada). */
+  authKnown: boolean;
   /** Procesa un mensaje vivo del webhook (normaliza → guarda → responde si es self-chat). */
   handleWebhook(raw: WacliWebhookMessage): void;
+  /** Manda un texto al PROPIO self-chat del usuario. Canal de alerta del admin cuando el
+   *  central está caído (ver alerts.ts). Devuelve si pudo entregar. */
+  sendSelf(text: string): Promise<boolean>;
   /** Prende el `wacli sync --follow` del usuario (respawn con backoff). Lo maneja el pool en 4c. */
   startFollow(): void;
   /** Apaga el follow del usuario. */
@@ -69,12 +77,15 @@ export interface UserRuntimeOptions {
   wacliBin: string;
   /** Se llama cuando el usuario está activo en su self-chat (para repriorizar el pool). */
   onActivity?: () => void;
+  /** Se llama UNA vez cuando WhatsApp deslinkeó el companion (el follow murió y auth status dice
+   *  no-autenticado). El orquestador alerta al admin y dispara el re-pairing (ver index.ts). */
+  onDeslink?: () => void;
 }
 
 /** Crea el runtime de un usuario: abre su store, consulta auth, y arma el loop de respuesta y los
  *  sweeps. NO prende el follow (lo hace el caller vía startFollow). */
 export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserRuntime> {
-  const { userId, webhookUrl, webhookSecret, wacliBin, onActivity } = opts;
+  const { userId, webhookUrl, webhookSecret, wacliBin, onActivity, onDeslink } = opts;
   const storeDir = wacliStoreDir(userId);
   const u = (s: string) => `${dim(`[u${userId}]`)} ${s}`;
 
@@ -83,6 +94,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     console.error(u(`no pude consultar auth status: ${e.message}`));
     return null;
   });
+  const authKnown = status !== null;
   const authenticated = Boolean(status?.authenticated);
   const ownJid = status?.linked_jid ?? status?.jid ?? null;
   if (!authenticated) console.warn(u("WhatsApp no pareado → sin ingesta ni respuesta (corré pnpm pair)."));
@@ -143,7 +155,7 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
               question = await transcribe(path);
               if (question) {
                 setMsgText.run(question, m.id);
-                console.log(u(dim(`[stt] self: "${question.slice(0, 60)}"`)));
+                console.log(u(dim(`[stt] self: ${LOG_CONTENT ? `"${question.slice(0, 60)}"` : `«${question.length} chars»`}`)));
               }
             }
           }
@@ -196,8 +208,13 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     const tag = m.chatKind === "self" ? "🧠SELF" : m.chatKind === "group" ? "👥GRP " : "💬DM  ";
     const dir = m.fromMe ? "→" : "←";
     const mediaTag = m.mediaType ? ` [${m.mediaType}]` : "";
-    const body = (m.text || m.reactionEmoji || "").replace(/\s+/g, " ").slice(0, 80);
-    console.log(u(`${tag} ${dir} ${m.pushName || m.senderJid}: ${body}${mediaTag}${saved ? "" : dim(" (dup)")}`));
+    const text = m.text || m.reactionEmoji || "";
+    // El journal es root-readable y persiste fuera de data/: sin MEMU_LOG_CONTENT=1 no se loguea
+    // ni el texto ni el nombre del contacto, solo metadata (tipo de chat, dirección, tamaño).
+    const body = LOG_CONTENT
+      ? `${m.pushName || m.senderJid}: ${text.replace(/\s+/g, " ").slice(0, 80)}`
+      : `«${text.length} chars»`;
+    console.log(u(`${tag} ${dir} ${body}${mediaTag}${saved ? "" : dim(" (dup)")}`));
 
     // La CHARLA se mudó al bot central (central-bot.ts): este runtime solo LEE los chats del
     // usuario para armar su segundo cerebro (ingesta + embeddings + STT). No responde acá.
@@ -232,7 +249,8 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
         // ¿Nos deslinkearon? Reconectar no sirve y solo hace ruido → cortar y avisar.
         const st = await client.authStatus().catch(() => null);
         if (st && !st.authenticated) {
-          console.error(u("⚠️  WhatsApp deslinkeó este dispositivo. NO reintento. Corré `pnpm pair`."));
+          console.error(u("⚠️  WhatsApp deslinkeó este dispositivo. NO reintento."));
+          onDeslink?.();
           return;
         }
         console.log(u(dim(`sync salió (code=${code} signal=${signal}) — respawn en ${backoff / 1000}s`)));
@@ -351,6 +369,17 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
   mediaTimer.unref();
   mediaCapSweep(); // enforce al arrancar
 
+  const sendSelf = async (text: string): Promise<boolean> => {
+    if (!ownJid) return false;
+    try {
+      const r = await client.sendText(ownJid, `${MEMU_PREFIX}${text}`);
+      if (r.id) sentByMemu.add(r.id);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const close = (): void => {
     if (closing) return;
     closing = true;
@@ -363,5 +392,5 @@ export async function createUserRuntime(opts: UserRuntimeOptions): Promise<UserR
     media.close();
   };
 
-  return { userId, ownJid, authenticated, handleWebhook, startFollow, stopFollow, close };
+  return { userId, ownJid, authenticated, authKnown, handleWebhook, sendSelf, startFollow, stopFollow, close };
 }

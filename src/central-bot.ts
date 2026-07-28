@@ -24,6 +24,8 @@ import { WacliClient } from "./wacli/wacli-client.ts";
 import { isBroadcastJid, stripDeviceSuffix, type WacliWebhookMessage } from "./wacli/wacli-webhook-types.ts";
 
 const CENTRAL_STORE = process.env.CENTRAL_WACLI_STORE ?? "./data/central/wacli";
+// Loguear CONTENIDO (preguntas/respuestas) al journal. Default: NO — ver user-runtime.ts.
+const LOG_CONTENT = process.env.MEMU_LOG_CONTENT === "1";
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const isAudioType = (t?: string): boolean => t === "audio" || t === "ptt";
@@ -116,6 +118,10 @@ function detectReplyMode(text: string, inputAudio: boolean): "audio" | "text" {
 
 export interface CentralBot {
   handleWebhook(raw: WacliWebhookMessage): void;
+  /** DM desde el número central a un teléfono (E.164 sin +). Devuelve si pudo entregar. */
+  sendToPhone(phone: string, text: string): Promise<boolean>;
+  /** Avisa a un usuario que su companion se desvinculó y le manda un código fresco de re-pairing. */
+  notifyRelink(phone: string): Promise<void>;
   startFollow(): void;
   stopFollow(): void;
   close(): void;
@@ -125,10 +131,14 @@ export interface CentralBotOptions {
   webhookUrl: string; // …/wacli/central
   webhookSecret: string;
   wacliBin: string;
+  /** Se llama UNA vez cuando el NÚMERO CENTRAL quedó desvinculado/baneado (detectado al morir el
+   *  follow o por el watchdog). El orquestador alerta al admin por el canal de fallback (su
+   *  companion → self-chat), porque este número ya no puede mandar nada. */
+  onDeslink?: () => void;
 }
 
 export async function createCentralBot(opts: CentralBotOptions): Promise<CentralBot> {
-  const { webhookUrl, webhookSecret, wacliBin } = opts;
+  const { webhookUrl, webhookSecret, wacliBin, onDeslink } = opts;
   const registry = getRegistry();
   const client = new WacliClient({ bin: wacliBin, store: CENTRAL_STORE });
 
@@ -162,6 +172,39 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
       .sendText(jid, text)
       .then((r) => { if (r.id) sentByMemu.add(r.id); })
       .catch(() => {});
+
+  const sendToPhone = async (phone: string, text: string): Promise<boolean> => {
+    try {
+      const r = await client.sendText(`${phone}@s.whatsapp.net`, text);
+      if (r.id) sentByMemu.add(r.id);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Re-vinculación tras un deslink del companion: aviso + código fresco (cpProvision es idempotente).
+  // El orquestador ya bajó al usuario a 'pending', así que si el código caduca, su próximo mensaje
+  // cae en onboard() y recibe otro. Ver index.ts (handleUserDeslink).
+  const RELINK_INTRO =
+    "Ojo 👀 tu WhatsApp se desvinculó de Memu, así que dejé de leer tus chats (tu memoria queda " +
+    "congelada hasta reconectar). Se arregla en 1 minuto:";
+  const RELINK_FALLBACK = `${RELINK_INTRO}\n\nEscribime cualquier cosa y te mando un código nuevo 📲`;
+  const relinkMsg = (code: string): string =>
+    `${RELINK_INTRO}\n\n` +
+    "1) Abrí WhatsApp → *Ajustes → Dispositivos vinculados*\n" +
+    '2) Tocá *"Vincular un dispositivo"* → *"Vincular con número de teléfono"*\n' +
+    `3) Ingresá este código: *${code}*`;
+  const notifyRelink = async (phone: string): Promise<void> => {
+    try {
+      const res = await cpProvision(phone);
+      await sendToPhone(phone, res.code ? relinkMsg(res.code) : RELINK_FALLBACK);
+      console.log(dim(`[bot] relink ${phone} → ${res.status}${res.code ? " (código)" : ""}`));
+    } catch (e) {
+      console.log(dim(`[bot] relink ${phone} falló: ${(e as Error)?.message ?? e}`));
+      await sendToPhone(phone, RELINK_FALLBACK);
+    }
+  };
   const queue: Array<{ userId: string; chatJid: string; m: MemuMessage }> = [];
   let working = false;
   let closing = false;
@@ -229,7 +272,13 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
             const r = await client.sendText(chatJid, ans);
             if (r.id) sentByMemu.add(r.id);
           }
-          console.log(dim(`[bot] u${userId} ← "${question.slice(0, 40)}" → "${ans.slice(0, 40)}"`));
+          console.log(
+            dim(
+              LOG_CONTENT
+                ? `[bot] u${userId} ← "${question.slice(0, 40)}" → "${ans.slice(0, 40)}"`
+                : `[bot] u${userId} ← «${question.length} chars» → «${ans.length} chars»`,
+            ),
+          );
         } catch (e) {
           console.log(dim(`[bot] error respondiendo a u${userId}: ${(e as Error)?.message ?? e}`));
           await client.sendText(chatJid, "Uf, algo falló procesando eso 🫤").catch(() => {});
@@ -478,6 +527,34 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
   const onboardingTimer = setInterval(() => advanceOnboarding(), 20_000);
   onboardingTimer.unref();
 
+  // --- Deslink/ban del NÚMERO CENTRAL: el peor caso (nadie puede chatear con Memu) -----------
+  // Se detecta en dos puntos: al morir el follow (abajo) y por un watchdog periódico (cubre el
+  // caso en que el follow sigue vivo pero la sesión quedó deslogueada). `onDeslink` dispara la
+  // alerta al admin por el canal de fallback. Si alguien re-parea el central, el watchdog lo ve
+  // y retoma el follow solo.
+  let deslinked = false;
+  const handleDeslink = (): void => {
+    if (deslinked || closing) return;
+    deslinked = true;
+    console.error("[bot] 🚨 el número central quedó DESVINCULADO (¿ban?). No reintento el follow — ver runbook (<doc interno>).");
+    onDeslink?.();
+  };
+  const watchdog = async (): Promise<void> => {
+    if (closing) return;
+    const st = await client.authStatus().catch(() => null);
+    if (!st) return; // no pude consultar → no sé nada, no alarmo
+    if (!st.authenticated) {
+      stopFollow();
+      handleDeslink();
+    } else if (deslinked) {
+      deslinked = false;
+      console.log("[bot] ✅ central re-pareado — retomo el follow");
+      startFollow();
+    }
+  };
+  const watchdogTimer = setInterval(() => void watchdog(), 600_000); // 10 min
+  watchdogTimer.unref();
+
   // --- Follow del store central (con backoff, igual que los per-user) ---
   let proc: ChildProcess | null = null;
   let followWanted = false;
@@ -501,8 +578,16 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
       proc = null;
       if (closing || !followWanted) return;
       backoff = Date.now() - startedAt > 60_000 ? MIN_BACKOFF : Math.min(backoff * 2, MAX_BACKOFF);
-      console.log(dim(`[bot] follow central salió (code=${code} signal=${signal}) — respawn en ${backoff / 1000}s`));
-      setTimeout(() => startFollow(), backoff).unref();
+      void (async () => {
+        // ¿Nos deslinkearon/banearon? Reconectar no sirve → cortar y alertar (no respawnear).
+        const st = await client.authStatus().catch(() => null);
+        if (st && !st.authenticated) {
+          handleDeslink();
+          return;
+        }
+        console.log(dim(`[bot] follow central salió (code=${code} signal=${signal}) — respawn en ${backoff / 1000}s`));
+        setTimeout(() => startFollow(), backoff).unref();
+      })();
     });
     proc.once("error", (err) => console.error(`[bot] follow spawn error: ${String(err)}`));
   };
@@ -518,10 +603,11 @@ export async function createCentralBot(opts: CentralBotOptions): Promise<Central
     clearInterval(reminderTimer);
     clearInterval(remTimer);
     clearInterval(onboardingTimer);
+    clearInterval(watchdogTimer);
     stopFollow();
     lidmap.close();
     media.close();
   };
 
-  return { handleWebhook, startFollow, stopFollow, close };
+  return { handleWebhook, sendToPhone, notifyRelink, startFollow, stopFollow, close };
 }

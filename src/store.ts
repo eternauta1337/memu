@@ -158,7 +158,7 @@ export interface Fact {
 }
 
 export function openStore(dbPath: string, userId = ""): MemuStore {
-  mkdirSync(dirname(dbPath), { recursive: true });
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 }); // datos de usuarios: solo el dueño
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000"); // el ingest y el importador pueden escribir a la vez
